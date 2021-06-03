@@ -211,6 +211,41 @@ ILUSolver::SetupMatrix() {
     iluMatrix_ = aMatrix_;
 }
 
+template <bool B>
+static typename std::enable_if<B, void>::type
+busy_waiting_if(std::atomic_bool* cond) {
+    while (!cond->load(std::memory_order_acquire)); // busy waiting
+};
+
+template <bool B>
+static typename std::enable_if<!B, void>::type
+busy_waiting_if(std::atomic_bool*) {};
+
+template <bool B>
+static void left_looking_col(int j, long* col_ptr, int* row_idx, double* a, long* diag_ptr,
+                             int* hash_key, long* hash_value, std::atomic_bool* task_done) {
+    int col_nnz = static_cast<int>(col_ptr[j+1] - col_ptr[j]);
+    HashTable colj_row_pos(col_nnz * hash_size_multiplier, hash_key, hash_value);
+    for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
+        colj_row_pos.set(row_idx[ji], ji);
+    }
+    for (long ji = col_ptr[j]; ji < diag_ptr[j]; ++ji) {
+        int k = row_idx[ji];
+        busy_waiting_if<B>(&task_done[k]);
+        for (long ki = diag_ptr[k] + 1; ki < col_ptr[k+1]; ++ki) {
+            long aij_pos = colj_row_pos.get(row_idx[ki]);
+            if (aij_pos > 0) {
+                a[aij_pos] -= a[ki] * a[ji];
+            }
+        }
+    }
+    for (long ji = diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
+        a[ji] /= a[diag_ptr[j]];
+    }
+
+    task_done[j].store(true, std::memory_order_release);
+}
+
 bool             
 ILUSolver::Factorize() {
     // HERE, do triangle decomposition 
@@ -237,25 +272,8 @@ ILUSolver::Factorize() {
             int j = ext_->partitions[k];
             
             // execute task
-            int col_nnz = static_cast<int>(col_ptr[j+1] - col_ptr[j]);
-            HashTable colj_row_pos(col_nnz * hash_size_multiplier, extt_[tid].hash_key, extt_[tid].hash_value);
-            for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
-                colj_row_pos.set(row_idx[ji], ji);
-            }
-            for (long ji = col_ptr[j]; ji < ext_->diag_ptr[j]; ++ji) {
-                int k = row_idx[ji];
-                for (long ki = ext_->diag_ptr[k] + 1; ki < col_ptr[k+1]; ++ki) {
-                    long aij_pos = colj_row_pos.get(row_idx[ki]);
-                    if (aij_pos > 0) {
-                        a[aij_pos] -= a[ki] * a[ji];
-                    }
-                }
-            }
-            for (long ji = ext_->diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
-                a[ji] /= a[ext_->diag_ptr[j]];
-            }
-
-            ext_->task_done[j].store(true, std::memory_order_release);
+            left_looking_col<false>(j, col_ptr, row_idx, a, ext_->diag_ptr,
+                                    extt_[tid].hash_key, extt_[tid].hash_value, ext_->task_done);
         }
         /* queue part */
         while (true) {
@@ -267,26 +285,8 @@ ILUSolver::Factorize() {
             int j = ext_->partitions[task_id];
 
             // execute task
-            int col_nnz = static_cast<int>(col_ptr[j+1] - col_ptr[j]);
-            HashTable colj_row_pos(col_nnz * hash_size_multiplier, extt_[tid].hash_key, extt_[tid].hash_value);
-            for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
-                colj_row_pos.set(row_idx[ji], ji);
-            }
-            for (long ji = col_ptr[j]; ji < ext_->diag_ptr[j]; ++ji) {
-                int k = row_idx[ji];
-                while (!ext_->task_done[k].load(std::memory_order_acquire)); // busy waiting
-                for (long ki = ext_->diag_ptr[k] + 1; ki < col_ptr[k+1]; ++ki) {
-                    long aij_pos = colj_row_pos.get(row_idx[ki]);
-                    if (aij_pos > 0) {
-                        a[aij_pos] -= a[ki] * a[ji];
-                    }
-                }
-            }
-            for (long ji = ext_->diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
-                a[ji] /= a[ext_->diag_ptr[j]];
-            }
-
-            ext_->task_done[j].store(true, std::memory_order_release);
+            left_looking_col<true>(j, col_ptr, row_idx, a, ext_->diag_ptr,
+                                   extt_[tid].hash_key, extt_[tid].hash_value, ext_->task_done);
         }
     }
 
