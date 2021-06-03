@@ -64,49 +64,6 @@ ILUSolver::ReadAMatrix(const std::string& fname) {
     return true;
 }
 
-namespace {
-
-class HashTable {
-public:
-    HashTable(unsigned size, int* key, long* value) : mask_(size), key_(key), value_(value) {
-        mask_ |= mask_ >> 16;
-        mask_ |= mask_ >> 8;
-        mask_ |= mask_ >> 4;
-        mask_ |= mask_ >> 2;
-        mask_ |= mask_ >> 1;
-        memset(key_, 0xff, sizeof(int[mask_ + 1]));
-    }
-    void set(int key, long value) {
-        unsigned code = hash_code(key);
-        while (key_[code] >= 0) {
-            code = (code + 1) & mask_;
-        }
-        key_[code] = key;
-        value_[code] = value;
-    }
-    long get(int key) const {
-        for (unsigned code = hash_code(key); key_[code] >= 0; code = (code + 1) & mask_) {
-            if (key_[code] == key) {
-                return value_[code];
-            }
-        }
-        return -1;
-    }
-private:
-    int hash_code(int x) const {
-        static constexpr unsigned prime = 23333;
-        return (static_cast<unsigned>(x) * prime) & mask_;
-    };
-
-    unsigned mask_;
-    int* key_;
-    long* value_;
-};
-
-constexpr int hash_size_multiplier = 3;
-
-}
-
 struct ILUSolver::Ext {
     long* diag_ptr = nullptr;
     int* part_ptr = nullptr;
@@ -123,8 +80,7 @@ struct ILUSolver::Ext {
 };
 
 struct ILUSolver::ThreadLocalExt {
-    int* hash_key = nullptr;
-    long* hash_value = nullptr;
+    double* col_modification = nullptr;
 };
 
 class naive_load_balancer {
@@ -151,7 +107,6 @@ ILUSolver::SetupMatrix() {
     long* col_ptr = aMatrix_.GetColumnPointer();
     int* row_idx = aMatrix_.GetRowIndex();
     long nnz = aMatrix_.GetNonZeros();
-    long max_nnz = 0;
     ext_ = new Ext;
     ext_->diag_ptr = new long[n];
     ext_->partitions = new int[n];
@@ -164,7 +119,7 @@ ILUSolver::SetupMatrix() {
     ext_->csr.nnz_cnt = new int[n](); // initialized to zero
 
     // get diag_ptr
-#pragma omp parallel for reduction(max: max_nnz)
+#pragma omp parallel
     for (int j = 0; j < n; ++j) {
         for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
             if (row_idx[ji] >= j) {
@@ -172,7 +127,6 @@ ILUSolver::SetupMatrix() {
                 break;
             }
         }
-        max_nnz = std::max(max_nnz, col_ptr[j+1] - col_ptr[j]);
     }
 
     // CSC -> CSR
@@ -204,8 +158,7 @@ ILUSolver::SetupMatrix() {
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
-        extt_[tid].hash_key = new int[max_nnz * hash_size_multiplier * 2];
-        extt_[tid].hash_value = new long[max_nnz * hash_size_multiplier * 2];
+        extt_[tid].col_modification = new double[n];
     }
 
     iluMatrix_ = aMatrix_;
@@ -223,24 +176,22 @@ busy_waiting_if(std::atomic_bool*) {};
 
 template <bool B>
 static void left_looking_col(int j, long* col_ptr, int* row_idx, double* a, long* diag_ptr,
-                             int* hash_key, long* hash_value, std::atomic_bool* task_done) {
-    int col_nnz = static_cast<int>(col_ptr[j+1] - col_ptr[j]);
-    HashTable colj_row_pos(col_nnz * hash_size_multiplier, hash_key, hash_value);
+                             double* col_modification, std::atomic_bool* task_done) {
     for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
-        colj_row_pos.set(row_idx[ji], ji);
+        col_modification[row_idx[ji]] = 0;
     }
     for (long ji = col_ptr[j]; ji < diag_ptr[j]; ++ji) {
         int k = row_idx[ji];
         busy_waiting_if<B>(&task_done[k]);
+        a[ji] += col_modification[k];
         for (long ki = diag_ptr[k] + 1; ki < col_ptr[k+1]; ++ki) {
-            long aij_pos = colj_row_pos.get(row_idx[ki]);
-            if (aij_pos > 0) {
-                a[aij_pos] -= a[ki] * a[ji];
-            }
+            col_modification[row_idx[ki]] -= a[ki] * a[ji];
         }
     }
+    a[diag_ptr[j]] += col_modification[row_idx[diag_ptr[j]]];
+    double ajj = a[diag_ptr[j]];
     for (long ji = diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
-        a[ji] /= a[diag_ptr[j]];
+        a[ji] = (a[ji] + col_modification[row_idx[ji]]) / ajj;
     }
 
     task_done[j].store(true, std::memory_order_release);
@@ -273,7 +224,7 @@ ILUSolver::Factorize() {
             
             // execute task
             left_looking_col<false>(j, col_ptr, row_idx, a, ext_->diag_ptr,
-                                    extt_[tid].hash_key, extt_[tid].hash_value, ext_->task_done);
+                                    extt_[tid].col_modification, ext_->task_done);
         }
         /* queue part */
         while (true) {
@@ -286,7 +237,7 @@ ILUSolver::Factorize() {
 
             // execute task
             left_looking_col<true>(j, col_ptr, row_idx, a, ext_->diag_ptr,
-                                   extt_[tid].hash_key, extt_[tid].hash_value, ext_->task_done);
+                                   extt_[tid].col_modification, ext_->task_done);
         }
     }
 
