@@ -1,8 +1,9 @@
 #ifndef SUBTREE
 #define SUBTREE
 
-#include <string.h>
+#include <cstring>
 #include <algorithm>
+#include <atomic>
 
 /*
     n     - matrix dimension
