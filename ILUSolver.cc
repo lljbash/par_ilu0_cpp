@@ -6,7 +6,7 @@
 #include <atomic>
 #include <omp.h>
 #include "scope_guard.h"
-#include "sub_tree.h"
+#include "subtree.h"
 
 bool             
 ILUSolver::ReadRhs(const std::string& fname, bool sparse) {
@@ -127,6 +127,20 @@ struct ILUSolver::ThreadLocalExt {
     long* hash_value = nullptr;
 };
 
+class naive_load_balancer {
+public:
+    using weight_t = int;
+    weight_t get_weight(int vertex) const {
+        return 1;
+    }
+    bool is_balanced(int nproc, int nsubtree, weight_t max_weight, weight_t sum_weight) const {
+        return max_weight * nproc < sum_weight;
+    }
+    bool fallback(int nproc, int nsubtree) const { // 子树数量实在太少时回退
+        return nsubtree < nproc;
+    }
+};
+
 void             
 ILUSolver::SetupMatrix() {
     // HERE, you could setup the reasonable stuctures of L and U as you want
@@ -141,7 +155,7 @@ ILUSolver::SetupMatrix() {
     ext_ = new Ext;
     ext_->diag_ptr = new long[n];
     ext_->partitions = new int[n];
-    ext_->part_ptr = new int[threads_ + 2];
+    ext_->part_ptr = new int[threads_ + 1];
     ext_->task_done = new std::atomic_bool[n];
     ext_->csr.row_ptr = new long[n+1](); // initialized to zero
     ext_->csr.col_idx = new int[nnz];
@@ -183,7 +197,8 @@ ILUSolver::SetupMatrix() {
         }
     }
 
-    partition_subtree(n, threads_, col_ptr, ext_->diag_ptr, row_idx, ext_->part_ptr, ext_->partitions);
+    /* 0, n, 1 or n-1, -1, -1 */
+    partition_subtree(threads_, 0, n, 1, col_ptr, ext_->diag_ptr, row_idx, ext_->part_ptr, ext_->partitions, naive_load_balancer());
 
     extt_ = new ThreadLocalExt[threads_];
 #pragma omp parallel
