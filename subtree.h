@@ -260,14 +260,15 @@ static void build_partitions(int n, int nproc, int nsubtree, const int *subtrees
     delete[] part_ptr_atomic;
 }
 
+template<typename weight_t>
 static void calculate_levels(int n, int vertex_begin, int vertex_end, int vertex_delta,
                              const long *edge_begins, const long *edge_ends, const int *edge_dst,
-                             const int *assign, int *level)
+                             const int *assign, const weight_t *node_weight, weight_t *level)
 {
     int vertex_rbegin = vertex_end - vertex_delta, vertex_rend = vertex_begin - vertex_delta;
     for (int i = 0; i < n; ++i)
     {
-        level[i] = n;
+        level[i] = - node_weight[i];
     }
     for (int j = vertex_rbegin; j != vertex_rend; j -= vertex_delta)
     {
@@ -276,7 +277,7 @@ static void calculate_levels(int n, int vertex_begin, int vertex_end, int vertex
             for (long k = edge_begins[j]; k < edge_ends[j]; ++k)
             {
                 int i = edge_dst[k];
-                int l = level[j] - 1;
+                weight_t l = level[j] - node_weight[i];
                 if (level[i] > l)
                 {
                     level[i] = l;
@@ -285,6 +286,12 @@ static void calculate_levels(int n, int vertex_begin, int vertex_end, int vertex
         }
     }
 }
+
+template<typename LoadBalancer>
+struct result_t {
+    using weight_t = typename LoadBalancer::weight_t;
+    weight_t cost;   // 对调度结果的评分，cost越低效果越好
+};
 
 /*
     n     - matrix dimension
@@ -302,7 +309,7 @@ static void calculate_levels(int n, int vertex_begin, int vertex_end, int vertex
     load_balancer.fallback(nproc, nsubtree)                             tells whether we should fall back to queues
  */
 template <typename LoadBalancer>
-static void partition_subtree(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
+static result_t<LoadBalancer> partition_subtree(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
                               const long *edge_begins, const long *edge_ends, const int *edge_dst,
                               int *part_ptr /* output: length nproc + 1 */,
                               int *partitions /* output: length n */,
@@ -313,6 +320,7 @@ static void partition_subtree(int nproc, int vertex_begin, int vertex_end, int v
     int *parent = new int[n];
     int *first_child = new int[n + 1];
     int *next_sibling = new int[n + 1];
+    weight_t *node_weight = new weight_t[n];
     weight_t *subtree_weight = new weight_t[n + 1];
     int *subtree_size = new int[n + 1];
     int *subtrees = new int[n];
@@ -324,7 +332,7 @@ static void partition_subtree(int nproc, int vertex_begin, int vertex_end, int v
 
     for (int v = vertex_begin; v != vertex_end; v += vertex_delta)
     {
-        subtree_weight[v] = load_balancer.get_weight(v);
+        subtree_weight[v] = node_weight[v] = load_balancer.get_weight(v);
         subtree_size[v] = 1;
     }
     subtree_weight[n] = 0;
@@ -337,20 +345,32 @@ static void partition_subtree(int nproc, int vertex_begin, int vertex_end, int v
 
     schedule_subtree(n, nproc, nsubtree, subtrees, subtree_size, subtree_weight, assign, part_ptr);
 
-    delete[] subtree_weight;
-
     build_partitions(n, nproc, nsubtree, subtrees, subtree_size, parent, first_child, next_sibling, part_ptr, partitions, assign);
-    // level-set sort
-    int *level = parent; // reuse
-    calculate_levels(n, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst, assign, level);
-    sort_by_rank_ascend(partitions + part_ptr[nproc], partitions + n, level);
 
-    delete[] parent;
     delete[] first_child;
     delete[] next_sibling;
     delete[] subtree_size;
+
+    // level-set sort
+    weight_t *level = new weight_t[n];
+    calculate_levels(n, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst, assign, node_weight, level);
+    sort_by_rank_ascend(partitions + part_ptr[nproc], partitions + n, level);
+
+    weight_t last_level = level[partitions[n - 1]], longest = last_level - level[partitions[part_ptr[nproc]];
+    for(int i = 0; i < nsubtree; ++i) {
+        weight_t diff = last_level - level[parent[subtrees[i]]];
+        weight_t path = diff + subtree_weight[subtrees[i]];
+        longest = (longest > path) ? longest : path;
+    }
+
+    delete[] parent;
     delete[] subtrees;
     delete[] assign;
+    delete[] node_weight;
+    delete[] subtree_weight;
+    delete[] level;
+
+    return {longest};
 }
 
 #endif
