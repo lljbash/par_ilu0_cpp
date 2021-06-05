@@ -95,6 +95,9 @@ public:
     bool fallback(int nproc, int nsubtree) const { // 子树数量实在太少时回退
         return nsubtree < nproc;
     }
+    weight_t estimate_cost(weight_t subtree_part, weight_t queue_part) const {
+        return subtree_part + queue_part + queue_part / 16;
+    }
 };
 
 void             
@@ -152,7 +155,7 @@ ILUSolver::SetupMatrix() {
     }
 
     /* 0, n, 1 or n-1, -1, -1 */
-    partition_subtree(threads_, 0, n, 1, col_ptr, ext_->diag_ptr, row_idx, ext_->part_ptr, ext_->partitions, naive_load_balancer());
+    int cost = partition_subtree(threads_, 0, n, 1, col_ptr, ext_->diag_ptr, row_idx, ext_->part_ptr, ext_->partitions, naive_load_balancer());
 
     extt_ = new ThreadLocalExt[threads_];
 #pragma omp parallel
@@ -164,17 +167,40 @@ ILUSolver::SetupMatrix() {
     iluMatrix_ = aMatrix_;
 }
 
-template <bool B>
-static typename std::enable_if<B, void>::type
-busy_waiting_if(std::atomic_bool* cond) {
-    while (!cond->load(std::memory_order_acquire)); // busy waiting
+struct Skip {
+    static void busy_waiting(std::atomic_bool* cond) {}
+};
+struct Wait {
+    static void busy_waiting(std::atomic_bool* cond) {
+        while (!cond->load(std::memory_order_acquire)); // busy waiting
+    }
 };
 
-template <bool B>
-static typename std::enable_if<!B, void>::type
-busy_waiting_if(std::atomic_bool*) {};
+struct ScaleL {
+    static double scale(double a, double diag) {
+        return a / diag;
+    }
+};
+struct ScaleU {
+    static double scale(double a, double diag) {
+        return a;
+    }
+};
 
-template <bool B>
+template<typename L, typename U>
+struct DiagnalScale {
+    static double scale_L(double a, double diag) {
+        return L::scale(a, diag);
+    }
+    static double scale_U(double a, double diag) {
+        return U::scale(a, diag);
+    }
+};
+
+using NonTranspose = DiagnalScale<ScaleL, ScaleU>;
+using Transpose = DiagnalScale<ScaleU, ScaleL>;  // For CSR format
+
+template <typename W, typename T>
 static void left_looking_col(int j, long* col_ptr, int* row_idx, double* a, long* diag_ptr,
                              double* col_modification, std::atomic_bool* task_done) {
     for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
@@ -182,8 +208,8 @@ static void left_looking_col(int j, long* col_ptr, int* row_idx, double* a, long
     }
     for (long ji = col_ptr[j]; ji < diag_ptr[j]; ++ji) {
         int k = row_idx[ji];
-        busy_waiting_if<B>(&task_done[k]);
-        a[ji] += col_modification[k];
+        W::busy_waiting(&task_done[k]);
+        a[ji] = T::scale_U(a[ji] + col_modification[k], a[diag_ptr[k]]);
         for (long ki = diag_ptr[k] + 1; ki < col_ptr[k+1]; ++ki) {
             col_modification[row_idx[ki]] -= a[ki] * a[ji];
         }
@@ -191,7 +217,7 @@ static void left_looking_col(int j, long* col_ptr, int* row_idx, double* a, long
     a[diag_ptr[j]] += col_modification[row_idx[diag_ptr[j]]];
     double ajj = a[diag_ptr[j]];
     for (long ji = diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
-        a[ji] = (a[ji] + col_modification[row_idx[ji]]) / ajj;
+        a[ji] = T::scale_L(a[ji] + col_modification[row_idx[ji]], ajj);
     }
 
     task_done[j].store(true, std::memory_order_release);
@@ -223,7 +249,7 @@ ILUSolver::Factorize() {
             int j = ext_->partitions[k];
             
             // execute task
-            left_looking_col<false>(j, col_ptr, row_idx, a, ext_->diag_ptr,
+            left_looking_col<Skip, NonTranspose>(j, col_ptr, row_idx, a, ext_->diag_ptr,
                                     extt_[tid].col_modification, ext_->task_done);
         }
         /* queue part */
@@ -236,7 +262,7 @@ ILUSolver::Factorize() {
             int j = ext_->partitions[task_id];
 
             // execute task
-            left_looking_col<true>(j, col_ptr, row_idx, a, ext_->diag_ptr,
+            left_looking_col<Wait, NonTranspose>(j, col_ptr, row_idx, a, ext_->diag_ptr,
                                    extt_[tid].col_modification, ext_->task_done);
         }
     }

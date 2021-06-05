@@ -287,12 +287,6 @@ static void calculate_levels(int n, int vertex_begin, int vertex_end, int vertex
     }
 }
 
-template<typename LoadBalancer>
-struct result_t {
-    using weight_t = typename LoadBalancer::weight_t;
-    weight_t cost;   // 对调度结果的评分，cost越低效果越好
-};
-
 /*
     n     - matrix dimension
     nproc - number of processors
@@ -307,13 +301,16 @@ struct result_t {
     load_balancer.get_weight(v)                                         returns the weight of the vertex v
     load_balancer.is_balanced(nproc, nsubtree, max_weight, sum_weight)  tells whether the current subtrees are balanced
     load_balancer.fallback(nproc, nsubtree)                             tells whether we should fall back to queues
+
+    returns an estimation of the computation cost
  */
 template <typename LoadBalancer>
-static result_t<LoadBalancer> partition_subtree(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
-                              const long *edge_begins, const long *edge_ends, const int *edge_dst,
-                              int *part_ptr /* output: length nproc + 1 */,
-                              int *partitions /* output: length n */,
-                              LoadBalancer &&load_balancer)
+static typename LoadBalancer::weight_t
+partition_subtree(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
+                  const long *edge_begins, const long *edge_ends, const int *edge_dst,
+                  int *part_ptr /* output: length nproc + 1 */,
+                  int *partitions /* output: length n */,
+                  LoadBalancer &&load_balancer)
 {
     using weight_t = typename LoadBalancer::weight_t;
     int n = (vertex_begin > vertex_end) ? (vertex_begin - vertex_end) : (vertex_end - vertex_begin);
@@ -356,10 +353,10 @@ static result_t<LoadBalancer> partition_subtree(int nproc, int vertex_begin, int
     calculate_levels(n, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst, assign, node_weight, level);
     sort_by_rank_ascend(partitions + part_ptr[nproc], partitions + n, level);
 
-    weight_t last_level = level[partitions[n - 1]], longest = last_level - level[partitions[part_ptr[nproc]];
+    weight_t last_level = level[partitions[n - 1]];
+    weight_t longest = load_balancer.estimate_cost(0, last_level - level[partitions[part_ptr[nproc]]]);
     for(int i = 0; i < nsubtree; ++i) {
-        weight_t diff = last_level - level[parent[subtrees[i]]];
-        weight_t path = diff + subtree_weight[subtrees[i]];
+        weight_t path = load_balancer.estimate_cost(subtree_weight[subtrees[i]], last_level - level[parent[subtrees[i]]]);
         longest = (longest > path) ? longest : path;
     }
 
@@ -370,7 +367,7 @@ static result_t<LoadBalancer> partition_subtree(int nproc, int vertex_begin, int
     delete[] subtree_weight;
     delete[] level;
 
-    return {longest};
+    return longest;
 }
 
 #endif
