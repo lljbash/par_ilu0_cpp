@@ -86,18 +86,22 @@ struct ILUSolver::ThreadLocalExt {
 class naive_load_balancer {
 public:
     using weight_t = int;
-    weight_t get_weight(int vertex) const {
+    weight_t sequential_cost(int vertex) const {
         return 1;
     }
+    weight_t pipeline_latency(int vertex) const {  // 假设j依赖i，则parallel_latency(j)指的是在任务队列中，从i的完成到j的完成之间的时间差
+        return 1;
+    }
+    /*
     bool is_balanced(int nproc, int nsubtree, weight_t max_weight, weight_t sum_weight) const {
         return max_weight * nproc < sum_weight;
     }
     bool fallback(int nproc, int nsubtree) const { // 子树数量实在太少时回退
         return nsubtree < nproc;
     }
-    weight_t estimate_cost(weight_t subtree_part, weight_t queue_part) const {
+    weight_t estimate_total_cost(weight_t subtree_part, weight_t queue_part) const {
         return subtree_part + queue_part + queue_part / 16;
-    }
+    }*/
 };
 
 void             
