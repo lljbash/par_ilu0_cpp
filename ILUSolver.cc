@@ -69,14 +69,18 @@ struct ILUSolver::Ext {
     int* task_queue = nullptr;
     //int* part_ptr = nullptr;
     //int* partitions = nullptr;
+    int* task_queue_L = nullptr;
+    int* level_end_L = nullptr;
+    int* task_queue_U = nullptr;
+    int* level_end_U = nullptr;
     std::atomic_bool* task_done;
 
     struct CSR {
         long* row_ptr = nullptr;
         int* col_idx = nullptr;
-        int* a = nullptr;
+        long* a_map = nullptr;
+        double* a = nullptr;
         long* diag_ptr = nullptr;
-        int* nnz_cnt = nullptr;
     } csr;
 };
 
@@ -99,12 +103,18 @@ ILUSolver::SetupMatrix() {
     ext_->task_queue = new int[n];
     //ext_->partitions = new int[n];
     //ext_->part_ptr = new int[threads_ + 2];
+    ext_->task_queue_L = new int[n];
+    ext_->level_end_L = new int[n];
+    ext_->task_queue_U = new int[n];
+    ext_->level_end_U = new int[n];
     ext_->task_done = new std::atomic_bool[n];
     ext_->csr.row_ptr = new long[n+1](); // initialized to zero
     ext_->csr.col_idx = new int[nnz];
-    //ext_->csr.a = new int[nnz];
+    ext_->csr.a_map = new long[nnz];
+    ext_->csr.a = new double[nnz];
     ext_->csr.diag_ptr = new long[n];
-    ext_->csr.nnz_cnt = new int[n](); // initialized to zero
+    int* nnz_cnt = new int[n](); // initialized to zero
+    ON_SCOPE_EXIT { delete[] nnz_cnt; };
     int* dep_cnt = new int[n];
     ON_SCOPE_EXIT { delete[] dep_cnt; };
 
@@ -133,9 +143,10 @@ ILUSolver::SetupMatrix() {
 #pragma omp parallel for
         for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
             int i = row_idx[ji];
-            long ii = ext_->csr.row_ptr[i] + ext_->csr.nnz_cnt[i];
+            long ii = ext_->csr.row_ptr[i] + nnz_cnt[i];
             ext_->csr.col_idx[ii] = j;
-            ++ext_->csr.nnz_cnt[i];
+            ext_->csr.a_map[ii] = ji;
+            ++nnz_cnt[i];
             if (i == j) {
                 ext_->csr.diag_ptr[i] = ii;
             }
@@ -163,6 +174,52 @@ ILUSolver::SetupMatrix() {
         }
     }
     //partition_subtree(n, threads_, col_ptr, ext_->diag_ptr, row_idx, ext_->part_ptr, ext_->partitions);
+    task_tail = 0;
+    for (int i = 0; i < n; ++i) {
+        dep_cnt[i] = static_cast<int>(ext_->csr.diag_ptr[i] - ext_->csr.row_ptr[i]);
+        if (dep_cnt[i] == 0) {
+            ext_->task_queue_L[task_tail] = i;
+            ++task_tail;
+        }
+    }
+    ext_->level_end_L[0] = task_tail;
+    for (int l = 1; task_tail < n; ++l) {
+        int te = task_tail;
+        for (int t = 0; t < te; ++t) {
+            int i = ext_->task_queue_L[t];
+            for (long ji = ext_->diag_ptr[i] + 1; ji < col_ptr[i+1]; ++ji) {
+                int k = row_idx[ji];
+                if (--dep_cnt[k] == 0) {
+                    ext_->task_queue_L[task_tail] = k;
+                    ++task_tail;
+                }
+            }
+        }
+        ext_->level_end_L[l] = task_tail;
+    }
+    task_tail = 0;
+    for (int i = 0; i < n; ++i) {
+        dep_cnt[i] = static_cast<int>(ext_->csr.row_ptr[i+1] - ext_->csr.diag_ptr[i] - 1);
+        if (dep_cnt[i] == 0) {
+            ext_->task_queue_U[task_tail] = i;
+            ++task_tail;
+        }
+    }
+    ext_->level_end_U[0] = task_tail;
+    for (int l = 1; task_tail < n; ++l) {
+        int te = task_tail;
+        for (int t = 0; t < te; ++t) {
+            int i = ext_->task_queue_U[t];
+            for (long ji = col_ptr[i]; ji < ext_->diag_ptr[i]; ++ji) {
+                int k = row_idx[ji];
+                if (--dep_cnt[k] == 0) {
+                    ext_->task_queue_U[task_tail] = k;
+                    ++task_tail;
+                }
+            }
+        }
+        ext_->level_end_U[l] = task_tail;
+    }
 
     extt_ = new ThreadLocalExt[threads_];
 #pragma omp parallel
@@ -253,6 +310,13 @@ ILUSolver::Factorize() {
         }
     }
 
+    // CSC -> CSR
+    long nnz = iluMatrix_.GetNonZeros();
+#pragma omp parallel for
+    for (int ii = 0; ii < nnz; ++ii) {
+        ext_->csr.a[ii] = a[ext_->csr.a_map[ii]];
+    }
+
     return true;
 }
 
@@ -266,19 +330,54 @@ ILUSolver::Substitute() {
     double* a = iluMatrix_.GetValue();
     x_ = new double[n];
     memcpy(x_, b_, sizeof(double[n]));
-    for (int j = 0; j < n; ++j) {
-        for (long ji = ext_->diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
-            int i = row_idx[ji];
-            x_[i] -= x_[j] * a[ji];
+
+    // L
+    for (int l = 0, tb = 0; ; ++l) {
+        int te = ext_->level_end_L[l];
+#pragma omp parallel for schedule(static, 1)
+        for (int t = tb; t < te; ++t) {
+            int i = ext_->task_queue_L[t];
+            for (long ii = ext_->csr.row_ptr[i]; ii < ext_->csr.diag_ptr[i]; ++ii) {
+                int j = ext_->csr.col_idx[ii];
+                x_[i] -= x_[j] * ext_->csr.a[ii];
+            }
         }
-    }
-    for (int j = n - 1; j >= 0; --j) {
-        x_[j] /= a[ext_->diag_ptr[j]];
-        for (long ji = col_ptr[j]; ji < ext_->diag_ptr[j]; ++ji) {
-            int i = row_idx[ji];
-            x_[i] -= x_[j] * a[ji];
+        if (te >= n) {
+            break;
         }
+        tb = te;
     }
+    //for (int j = 0; j < n; ++j) {
+        //for (long ji = ext_->diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
+            //int i = row_idx[ji];
+            //x_[i] -= x_[j] * a[ji];
+        //}
+    //}
+
+    // U
+    for (int l = 0, tb = 0; ; ++l) {
+        int te = ext_->level_end_U[l];
+#pragma omp parallel for schedule(static, 1)
+        for (int t = tb; t < te; ++t) {
+            int i = ext_->task_queue_U[t];
+            for (long ii = ext_->csr.diag_ptr[i] + 1; ii < ext_->csr.row_ptr[i+1]; ++ii) {
+                int j = ext_->csr.col_idx[ii];
+                x_[i] -= x_[j] * ext_->csr.a[ii];
+            }
+            x_[i] /= ext_->csr.a[ext_->csr.diag_ptr[i]];
+        }
+        if (te >= n) {
+            break;
+        }
+        tb = te;
+    }
+    //for (int j = n - 1; j >= 0; --j) {
+        //x_[j] /= a[ext_->diag_ptr[j]];
+        //for (long ji = col_ptr[j]; ji < ext_->diag_ptr[j]; ++ji) {
+            //int i = row_idx[ji];
+            //x_[i] -= x_[j] * a[ji];
+        //}
+    //}
 }
 
 void    
