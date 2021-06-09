@@ -1,6 +1,6 @@
 pp = g++-4.8
 cf = -std=c++11 -O3 -fPIC -fopenmp -fexceptions -march=native -ffast-math -funroll-loops
-cf ?= -std=c++11 -g -fPIC -fopenmp -fexceptions
+#cf ?= -std=c++11 -g -fPIC -fopenmp -fexceptions -fsanitize=address -fno-omit-frame-pointer
 sh = -shared
 lf = -lrt -ldl -lnuma -lpthread
 

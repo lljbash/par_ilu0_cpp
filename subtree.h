@@ -5,6 +5,17 @@
 #include <algorithm>
 #include <atomic>
 
+template <class T>
+class ConstBiasArray {
+public:
+    ConstBiasArray(T* data) : data_(data), bias_(0) {}
+    ConstBiasArray(T* data, T bias) : data_(data), bias_(bias) {}
+    T operator[](size_t index) const { return data_[index] + bias_; }
+private:
+    T* data_;
+    T bias_;
+};
+
 constexpr const int etree_empty = -1, end_dfs = -5;
 
 template <typename Rank>
@@ -14,7 +25,7 @@ static void sort_by_rank_ascend(int *x_begin, int *x_end, const Rank *rank)
 }
 
 static void build_etree_parent(int n, int vertex_begin, int vertex_end, int vertex_delta,
-                               const long *edge_begins, const long *edge_ends, const int *edge_dst,
+                               ConstBiasArray<long> edge_begins, const long *edge_ends, const int *edge_dst,
                                int *parent, int *root /* temporary */)
 {
     for (int v = vertex_begin; v != vertex_end; v += vertex_delta)
@@ -263,7 +274,7 @@ static void build_partitions(int n, int nproc, int nsubtree, const int *subtrees
 
 template <typename LoadBalancer>
 static void calculate_levels(int n, int vertex_begin, int vertex_end, int vertex_delta,
-                             const long *edge_begins, const long *edge_ends, const int *edge_dst,
+                             ConstBiasArray<long> edge_begins, const long *edge_ends, const int *edge_dst,
                              const int *assign, typename LoadBalancer::weight_t *level, LoadBalancer &&load_balancer)
 {
     using weight_t = typename LoadBalancer::weight_t;
@@ -309,7 +320,7 @@ static void calculate_levels(int n, int vertex_begin, int vertex_end, int vertex
 template <typename LoadBalancer>
 static typename LoadBalancer::weight_t
 partition_subtree(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
-                  const long *edge_begins, const long *edge_ends, const int *edge_dst,
+                  ConstBiasArray<long> edge_begins, const long *edge_ends, const int *edge_dst,
                   int *part_ptr /* output: length nproc + 1 */,
                   int *partitions /* output: length n */,
                   LoadBalancer &&load_balancer)
