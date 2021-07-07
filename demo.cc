@@ -66,7 +66,7 @@ CheckPatterns(const CCSMatrix& origA, const CCSMatrix& iluMatrix) {
 }
 
 int
-CheckMatrixValue(double& maxdiff, const CCSMatrix& iluMatrix, const CCSMatrix& refMatrix) {
+CheckMatrixValue(double& maxdiff, const CCSMatrix& iluMatrix, const CCSMatrix& refMatrix, double abstol) {
     int diffCnt = 0;
     const long int* refColPtr = refMatrix.GetColumnPointer();
     const long int* iluColPtr = iluMatrix.GetColumnPointer();
@@ -81,7 +81,7 @@ CheckMatrixValue(double& maxdiff, const CCSMatrix& iluMatrix, const CCSMatrix& r
         const double refV = refVal[pos]; 
         double diff = fabs(iluV - refV);
         maxdiff = std::max(diff, maxdiff);
-        if (Float::LessEqual(diff, 1e-6)) continue;
+        if (Float::LessEqual(diff, abstol)) continue;
         if (Float::LessEqual(diff/std::min(fabs(iluV),fabs(refV)), 1e-3)) continue;
         ++diffCnt;
     }
@@ -89,7 +89,7 @@ CheckMatrixValue(double& maxdiff, const CCSMatrix& iluMatrix, const CCSMatrix& r
 }
 
 bool
-EvaluateLUResult(const CCSMatrix& iluMatrix, const CCSMatrix& refMatrix) {
+EvaluateLUResult(const CCSMatrix& iluMatrix, const CCSMatrix& refMatrix, double abstol) {
     bool success = CheckPatterns(refMatrix, iluMatrix);
     if (!success) {
         std::cout << "The result of ilu0 factorization should have the same patterns as original A matrix!" << std::endl;
@@ -97,7 +97,7 @@ EvaluateLUResult(const CCSMatrix& iluMatrix, const CCSMatrix& refMatrix) {
     }
 
     double maxDiff = 0;
-    int diffPoint = CheckMatrixValue(maxDiff, iluMatrix, refMatrix);
+    int diffPoint = CheckMatrixValue(maxDiff, iluMatrix, refMatrix, abstol);
     if (diffPoint) {
         std::cout << "The accuracy check of ilu0 factorization fails!" << std::endl
             << "\tDifferent Points: " << diffPoint << std::endl
@@ -109,12 +109,12 @@ EvaluateLUResult(const CCSMatrix& iluMatrix, const CCSMatrix& refMatrix) {
 }
 
 int
-EvaluateSolution(double& maxdiff, const double* sol, const double* ref, int dim) {
+EvaluateSolution(double& maxdiff, const double* sol, const double* ref, int dim, double abstol) {
     int diffCnt = 0;
     for (int i = 0; i < dim; ++i) {
         double diff = fabs(sol[i] - ref[i]);
         maxdiff = std::max(diff, maxdiff);
-        if (Float::Greater(diff, 1e-6)) {
+        if (Float::Greater(diff, abstol)) {
             ++diffCnt;
         }
     }
@@ -184,7 +184,8 @@ RunSolver(ILUSolver* solver, int loop, bool needSetup = true) {
 }
 
 bool CollectReferenceResult(int dim, CCSMatrix& refMatrix, double* refSolution, const std::string& matFilePath) {
-    refMatrix.LoadDenseFromFile(dim, matFilePath + "_refMat");
+    //refMatrix.LoadDenseFromFile(dim, matFilePath + "_refMat");
+    refMatrix.LoadFromFile(matFilePath + "_refMat");
     assert(dim == refMatrix.GetSize());
     const std::string refSolFile = matFilePath + "_refSol";
     
@@ -199,10 +200,10 @@ bool CollectReferenceResult(int dim, CCSMatrix& refMatrix, double* refSolution, 
     return true;
 }
 
-bool EvaluateResult(const ILUSolver* solver, const CCSMatrix& refMatrix, const double* refSolution) {
-    bool success = EvaluateLUResult(solver->GetILUMatrix(), refMatrix);
+bool EvaluateResult(const ILUSolver* solver, const CCSMatrix& refMatrix, const double* refSolution, double abstol) {
+    bool success = EvaluateLUResult(solver->GetILUMatrix(), refMatrix, abstol);
     double maxdiff = 0;
-    int diffPoint = EvaluateSolution(maxdiff, solver->GetSolution(), refSolution, refMatrix.GetSize());
+    int diffPoint = EvaluateSolution(maxdiff, solver->GetSolution(), refSolution, refMatrix.GetSize(), abstol);
     if (diffPoint) {
         std::cout << "The accuracy check of substitution fails!" << std::endl
             << "\tDifferent Points: " << diffPoint << std::endl
@@ -216,7 +217,8 @@ int main(int argc, char* argv[]) {
         std::cout << "Input ERROR!\nUsage: ./demo mode inputDir" << std::endl;
         std::cout << "mode: \
                             thread# \
-                            loop# "
+                            loop# \
+                            abstol#"
                   << std::endl;
 
         return -1;
@@ -237,7 +239,11 @@ int main(int argc, char* argv[]) {
         (std::string::npos != mode.find("loop")) ? atoi(mode.substr(mode.find("loop")+4).c_str()) : 10;
     const int threads = 
         (std::string::npos != mode.find("thread")) ? atoi(mode.substr(mode.find("thread")+6).c_str()) : 16;
-   
+    const double abstol = 
+        (std::string::npos != mode.find("abstol")) ? atof(mode.substr(mode.find("abstol")+6).c_str()) : 1e-9;
+
+    std::cout << "loop: " << loop << ", threads: " << threads << ", abstol: " << abstol << std::endl;
+
     CPUCYCLE PC = GetCycleCount();
     // read files
     StrVec matFileList;
@@ -269,7 +275,7 @@ int main(int argc, char* argv[]) {
             refSol.get_deleter() = std::default_delete<double[]>();
         }
         CollectReferenceResult(solver->GetDimension(), refMatrix, refSol.get(), matFile);
-        bool success = EvaluateResult(solver.get(), refMatrix, refSol.get());
+        bool success = EvaluateResult(solver.get(), refMatrix, refSol.get(), abstol);
         std::cout << "Result " << (success ? "Pass!" : "FAIL!!") << std::endl;
         std::cout << "******************************************************" << std::endl;
     }
