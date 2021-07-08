@@ -183,9 +183,9 @@ ILUSolver::SetupMatrix() {
         }
     }
     ext_->level_end_L[0] = task_tail;
-    for (int l = 1; task_tail < n; ++l) {
+    for (int l = 1, t = 0; task_tail < n; ++l) {
         int te = task_tail;
-        for (int t = 0; t < te; ++t) {
+        for (; t < te; ++t) {
             int i = ext_->task_queue_L[t];
             for (long ji = ext_->diag_ptr[i] + 1; ji < col_ptr[i+1]; ++ji) {
                 int k = row_idx[ji];
@@ -206,9 +206,9 @@ ILUSolver::SetupMatrix() {
         }
     }
     ext_->level_end_U[0] = task_tail;
-    for (int l = 1; task_tail < n; ++l) {
+    for (int l = 1, t = 0; task_tail < n; ++l) {
         int te = task_tail;
-        for (int t = 0; t < te; ++t) {
+        for (; t < te; ++t) {
             int i = ext_->task_queue_U[t];
             for (long ji = col_ptr[i]; ji < ext_->diag_ptr[i]; ++ji) {
                 int k = row_idx[ji];
@@ -337,11 +337,15 @@ ILUSolver::Substitute() {
 #pragma omp parallel for schedule(static, 1)
         for (int t = tb; t < te; ++t) {
             int i = ext_->task_queue_L[t];
+            //printf("%d ", i);
+            double xi = x_[i];
             for (long ii = ext_->csr.row_ptr[i]; ii < ext_->csr.diag_ptr[i]; ++ii) {
                 int j = ext_->csr.col_idx[ii];
-                x_[i] -= x_[j] * ext_->csr.a[ii];
+                xi -= x_[j] * ext_->csr.a[ii];
             }
+            x_[i] = xi;
         }
+        //printf("\n----------\n");
         if (te >= n) {
             break;
         }
@@ -360,12 +364,16 @@ ILUSolver::Substitute() {
 #pragma omp parallel for schedule(static, 1)
         for (int t = tb; t < te; ++t) {
             int i = ext_->task_queue_U[t];
+            //printf("%d ", i);
+            double xi = x_[i];
             for (long ii = ext_->csr.diag_ptr[i] + 1; ii < ext_->csr.row_ptr[i+1]; ++ii) {
                 int j = ext_->csr.col_idx[ii];
-                x_[i] -= x_[j] * ext_->csr.a[ii];
+                xi -= x_[j] * ext_->csr.a[ii];
             }
-            x_[i] /= ext_->csr.a[ext_->csr.diag_ptr[i]];
+            xi /= ext_->csr.a[ext_->csr.diag_ptr[i]];
+            x_[i] = xi;
         }
+        //printf("\n==========\n");
         if (te >= n) {
             break;
         }

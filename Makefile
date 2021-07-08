@@ -4,7 +4,7 @@ cf ?= -std=c++11 -g -fPIC -fopenmp -fexceptions
 sh = -shared
 lf = -lrt -ldl -lnuma -lpthread
 
-OBJS = ilusolver libILUSolver.so libnaive.so libserial.so
+OBJS = ilusolver libILUSolver.so libnaive.so
 
 all: $(OBJS)
 
@@ -13,8 +13,6 @@ ilusolver: demo.cc libILUSolver.so libCCSMatrix.so
 libILUSolver.so: ILUSolver.cc ILUSolver.h CommonDef.h
 	$(pp) $(cf) $(sh) -o $@ $< -Wl,-rpath=. -L. -lCCSMatrix $(lf)
 libnaive.so: ILUSolver_naive.cc ILUSolver.h CommonDef.h
-	$(pp) $(cf) $(sh) -o $@ $< -Wl,-rpath=. -L. -lCCSMatrix $(lf)
-libserial.so: ILUSolver_serial.cc ILUSolver.h CommonDef.h
 	$(pp) $(cf) $(sh) -o $@ $< -Wl,-rpath=. -L. -lCCSMatrix $(lf)
 clean:
 	-rm $(OBJS)
