@@ -68,7 +68,7 @@ struct ILUSolver::Ext {
     long* diag_ptr = nullptr;
     int* part_ptr = nullptr;
     int* partitions = nullptr;
-    std::atomic_bool* task_done;
+    std::atomic_bool* task_done = nullptr;
 
     struct CSR {
         long* row_ptr = nullptr;
@@ -78,6 +78,11 @@ struct ILUSolver::Ext {
         long* diag_ptr = nullptr;
         int* nnz_cnt = nullptr;
     } csr;
+
+    struct LUPart {
+        int* part_ptr = nullptr;
+        int* partitions = nullptr;
+    } l, u;
 };
 
 struct ILUSolver::ThreadLocalExt {
@@ -126,6 +131,10 @@ ILUSolver::SetupMatrix() {
     ext_->csr.a = new double[nnz];
     ext_->csr.ilu = new double[nnz];
     ext_->csr.diag_ptr = new long[n];
+    ext_->l.partitions = ext_->partitions;
+    ext_->l.part_ptr = ext_->part_ptr;
+    ext_->u.partitions = new int[n];
+    ext_->u.part_ptr = new int[threads_ + 1];
     int *nnz_cnt = new int[n](); // initialized to zero
     ON_SCOPE_EXIT { delete[] nnz_cnt; };
 
@@ -165,7 +174,8 @@ ILUSolver::SetupMatrix() {
 
     /* 0, n, 1 or n-1, -1, -1 */
     //int cost = partition_subtree(threads_, 0, n, 1, col_ptr, ext_->diag_ptr, row_idx, ext_->part_ptr, ext_->partitions, naive_load_balancer());
-    int cost = partition_subtree(threads_, 0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->part_ptr, ext_->partitions, naive_load_balancer());
+    partition_subtree(threads_, 0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->part_ptr, ext_->partitions, naive_load_balancer());
+    partition_subtree(threads_, n-1, -1, -1, {ext_->csr.diag_ptr, 1}, ext_->csr.row_ptr + 1, ext_->csr.col_idx, ext_->u.part_ptr, ext_->u.partitions, naive_load_balancer());
 
     extt_ = new ThreadLocalExt[threads_];
 #pragma omp parallel
@@ -285,6 +295,33 @@ ILUSolver::Factorize() {
     return true;
 }
 
+template <typename W>
+double substitute_row_L(int i, const long* row_ptr, const long* diag_ptr, const int* col_idx,
+                        const double* lvalue, const double* x,
+                        std::atomic_bool* task_done) {
+    double xi = x[i];
+    for (long ii = row_ptr[i]; ii < diag_ptr[i]; ++ii) {
+        int j = col_idx[ii];
+        W::busy_waiting(&task_done[j]);
+        xi -= x[j] * lvalue[ii];
+    }
+    return xi;
+}
+
+template <typename W>
+double substitute_row_U(int i, const long* row_ptr, const long* diag_ptr, const int* col_idx,
+                        const double* uvalue, const double* x,
+                        std::atomic_bool* task_done) {
+    double xi = x[i];
+    for (long ii = diag_ptr[i] + 1; ii < row_ptr[i+1]; ++ii) {
+        int j = col_idx[ii];
+        W::busy_waiting(&task_done[j]);
+        xi -= x[j] * uvalue[ii];
+    }
+    xi /= uvalue[diag_ptr[i]];
+    return xi;
+}
+
 void
 ILUSolver::Substitute() {
     // HERE, use the L and U calculated by ILUSolver::Factorize to solve the triangle systems 
@@ -292,19 +329,62 @@ ILUSolver::Substitute() {
     int n = aMatrix_.GetSize();
     x_ = new double[n];
     memcpy(x_, b_, sizeof(double[n]));
-    for (int i = 0; i < n; ++i) {
-        for (long ii = ext_->csr.row_ptr[i]; ii < ext_->csr.diag_ptr[i]; ++ii) {
-            int j = ext_->csr.col_idx[ii];
-            x_[i] -= x_[j] * ext_->csr.ilu[ii];
+#define SUBS_ROW(D, W, I, X) substitute_row_##D<W>(I, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->csr.ilu, X, ext_->task_done)
+    // L
+    std::atomic_int task_head{ext_->l.part_ptr[threads_]};
+#pragma omp parallel for
+    for (int j = 0; j < n; ++j) {
+        ext_->task_done[j].store(false, std::memory_order_relaxed);
+    }
+#pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        /* independent part */
+        printf("%d: %d %d\n", tid, ext_->l.part_ptr[tid], ext_->l.part_ptr[tid+1]);
+        for(int k = ext_->l.part_ptr[tid]; k < ext_->l.part_ptr[tid + 1]; ++k) {
+            int i = ext_->l.partitions[k];
+            x_[i] = SUBS_ROW(L, Skip, i, x_);
+            ext_->task_done[i].store(true, std::memory_order_release);
+        }
+        /* queue part */
+        while (true) {
+            int task_id = task_head.fetch_add(1, std::memory_order_relaxed);
+            if (task_id >= n) {
+                break;
+            }
+            int i = ext_->l.partitions[task_id];
+            x_[i] = SUBS_ROW(L, Wait, i, x_);
+            ext_->task_done[i].store(true, std::memory_order_release);
         }
     }
-    for (int i = n - 1; i >= 0; --i) {
-        for (long ii = ext_->csr.diag_ptr[i] + 1; ii < ext_->csr.row_ptr[i+1]; ++ii) {
-            int j = ext_->csr.col_idx[ii];
-            x_[i] -= x_[j] * ext_->csr.ilu[ii];
-        }
-        x_[i] /= ext_->csr.ilu[ext_->csr.diag_ptr[i]];
+    // U
+    task_head = ext_->u.part_ptr[threads_];
+#pragma omp parallel for
+    for (int j = 0; j < n; ++j) {
+        ext_->task_done[j].store(false, std::memory_order_relaxed);
     }
+#pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        printf("%d: %d %d\n", tid, ext_->u.part_ptr[tid], ext_->u.part_ptr[tid+1]);
+        /* independent part */
+        for(int k = ext_->u.part_ptr[tid]; k < ext_->u.part_ptr[tid + 1]; ++k) {
+            int i = ext_->u.partitions[k];
+            x_[i] = SUBS_ROW(U, Skip, i, x_);
+            ext_->task_done[i].store(true, std::memory_order_release);
+        }
+        /* queue part */
+        while (true) {
+            int task_id = task_head.fetch_add(1, std::memory_order_relaxed);
+            if (task_id >= n) {
+                break;
+            }
+            int i = ext_->u.partitions[task_id];
+            x_[i] = SUBS_ROW(U, Wait, i, x_);
+            ext_->task_done[i].store(true, std::memory_order_release);
+        }
+    }
+#undef SUBS_ROW
 }
 
 void    
