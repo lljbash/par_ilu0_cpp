@@ -340,7 +340,7 @@ ILUSolver::Substitute() {
     {
         int tid = omp_get_thread_num();
         /* independent part */
-        printf("%d: %d %d\n", tid, ext_->l.part_ptr[tid], ext_->l.part_ptr[tid+1]);
+        //printf("%d: %d %d\n", tid, ext_->l.part_ptr[tid], ext_->l.part_ptr[tid+1]);
         for(int k = ext_->l.part_ptr[tid]; k < ext_->l.part_ptr[tid + 1]; ++k) {
             int i = ext_->l.partitions[k];
             x_[i] = SUBS_ROW(L, Skip, i, x_);
@@ -366,7 +366,7 @@ ILUSolver::Substitute() {
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
-        printf("%d: %d %d\n", tid, ext_->u.part_ptr[tid], ext_->u.part_ptr[tid+1]);
+        //printf("%d: %d %d\n", tid, ext_->u.part_ptr[tid], ext_->u.part_ptr[tid+1]);
         /* independent part */
         for(int k = ext_->u.part_ptr[tid]; k < ext_->u.part_ptr[tid + 1]; ++k) {
             int i = ext_->u.partitions[k];
