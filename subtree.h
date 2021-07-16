@@ -1,5 +1,5 @@
-#ifndef SUBTREE
-#define SUBTREE
+#ifndef SUBTREE_H
+#define SUBTREE_H
 
 #include <limits>
 #include <algorithm>
