@@ -6,7 +6,6 @@
 #include <atomic>
 #include <omp.h>
 #include "scope_guard.h"
-#include "sub_tree.h"
 
 bool             
 ILUSolver::ReadRhs(const std::string& fname, bool sparse) {
@@ -66,22 +65,19 @@ ILUSolver::ReadAMatrix(const std::string& fname) {
 
 struct ILUSolver::Ext {
     long* diag_ptr = nullptr;
-    int* task_queue = nullptr;
-    //int* part_ptr = nullptr;
-    //int* partitions = nullptr;
-    std::atomic_bool* task_done;
 
     struct CSR {
         long* row_ptr = nullptr;
         int* col_idx = nullptr;
-        int* a = nullptr;
         long* diag_ptr = nullptr;
         int* nnz_cnt = nullptr;
     } csr;
+
+    double* dense_col = nullptr;
+    long* col_rowj_start = nullptr;
 };
 
 struct ILUSolver::ThreadLocalExt {
-    double* col_modification = nullptr;
 };
 
 void             
@@ -96,17 +92,10 @@ ILUSolver::SetupMatrix() {
     long nnz = aMatrix_.GetNonZeros();
     ext_ = new Ext;
     ext_->diag_ptr = new long[n];
-    ext_->task_queue = new int[n];
-    //ext_->partitions = new int[n];
-    //ext_->part_ptr = new int[threads_ + 2];
-    ext_->task_done = new std::atomic_bool[n];
     ext_->csr.row_ptr = new long[n+1](); // initialized to zero
     ext_->csr.col_idx = new int[nnz];
-    //ext_->csr.a = new int[nnz];
     ext_->csr.diag_ptr = new long[n];
     ext_->csr.nnz_cnt = new int[n](); // initialized to zero
-    int* dep_cnt = new int[n];
-    ON_SCOPE_EXIT { delete[] dep_cnt; };
 
     // get diag_ptr
 #pragma omp parallel
@@ -117,7 +106,6 @@ ILUSolver::SetupMatrix() {
                 break;
             }
         }
-        dep_cnt[j] = static_cast<int>(ext_->diag_ptr[j] - col_ptr[j]);
     }
 
     // CSC -> CSR
@@ -142,69 +130,18 @@ ILUSolver::SetupMatrix() {
         }
     }
 
-    // get topo task queue
-    std::atomic_int task_tail{0};
-#pragma omp parallel for
-    for (int j = 0; j < n; ++j) {
-        if (dep_cnt[j] == 0) {
-            int new_task = task_tail.fetch_add(1, std::memory_order_relaxed);
-            ext_->task_queue[new_task] = j;
-        }
-    }
-    for (int t = 0; t < n; ++t) {
-        int j = ext_->task_queue[t];
-        for (long ii = ext_->csr.diag_ptr[j] + 1; ii < ext_->csr.row_ptr[j+1]; ++ii) {
-            int k = ext_->csr.col_idx[ii];
-            int dep_rem = dep_cnt[k]--;
-            if (dep_rem == 1) {
-                int new_task = task_tail.fetch_add(1, std::memory_order_relaxed);
-                ext_->task_queue[new_task] = k;
-            }
-        }
-    }
-    //partition_subtree(n, threads_, col_ptr, ext_->diag_ptr, row_idx, ext_->part_ptr, ext_->partitions);
-
-    extt_ = new ThreadLocalExt[threads_];
-#pragma omp parallel
-    {
-        int tid = omp_get_thread_num();
-        extt_[tid].col_modification = new double[n];
-    }
+    ext_->dense_col = new double[n](); // should always be zero before use
+    ext_->col_rowj_start = new long[n];
 
     iluMatrix_ = aMatrix_;
 }
 
-template <bool B>
-static typename std::enable_if<B, void>::type
-busy_waiting_if(std::atomic_bool* cond) {
-    while (!cond->load(std::memory_order_acquire)); // busy waiting
-};
-
-template <bool B>
-static typename std::enable_if<!B, void>::type
-busy_waiting_if(std::atomic_bool*) {};
-
-template <bool B>
-static void left_looking_col(int j, long* col_ptr, int* row_idx, double* a, long* diag_ptr,
-                             double* col_modification, std::atomic_bool* task_done) {
-    for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
-        col_modification[row_idx[ji]] = 0;
+static void right_looking_col(int k, const long* col_ptr, const int* row_idx, double* a,
+                              long* col_rowj_start, const double* dense_col) {
+    double ajk = a[col_rowj_start[k]++];
+    for (long ii = col_rowj_start[k]; ii < col_ptr[k+1]; ++ii) {
+        a[ii] -= ajk * dense_col[row_idx[ii]];
     }
-    for (long ji = col_ptr[j]; ji < diag_ptr[j]; ++ji) {
-        int k = row_idx[ji];
-        busy_waiting_if<B>(&task_done[k]);
-        a[ji] += col_modification[k];
-        for (long ki = diag_ptr[k] + 1; ki < col_ptr[k+1]; ++ki) {
-            col_modification[row_idx[ki]] -= a[ki] * a[ji];
-        }
-    }
-    a[diag_ptr[j]] += col_modification[row_idx[diag_ptr[j]]];
-    double ajj = a[diag_ptr[j]];
-    for (long ji = diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
-        a[ji] = (a[ji] + col_modification[row_idx[ji]]) / ajj;
-    }
-
-    task_done[j].store(true, std::memory_order_release);
 }
 
 bool             
@@ -217,39 +154,25 @@ ILUSolver::Factorize() {
     int* row_idx = iluMatrix_.GetRowIndex();
     double* a = iluMatrix_.GetValue();
     std::memcpy(a, aMatrix_.GetValue(), sizeof(double[aMatrix_.GetNonZeros()]));
-    std::atomic_int task_head{0};
-    //std::atomic_int task_head{ext_->part_ptr[threads_]};
-#pragma omp parallel for
-    for (int j = 0; j < n; ++j) {
-        ext_->task_done[j].store(false, std::memory_order_relaxed);
-    }
 
-//#pragma omp parallel for schedule(dynamic, 1)
-    //for(int j = 0; j < n; ++j) {
-#pragma omp parallel
-    {
-        int tid = omp_get_thread_num();
-        /* independent part */
-        //for(int k = ext_->part_ptr[tid]; k < ext_->part_ptr[tid + 1]; ++k) {
-            //int j = ext_->partitions[k];
+    std::memcpy(ext_->col_rowj_start, col_ptr, sizeof(long[n]));
+    for (int i = 0; i < n; ++i) {
+        // aji /= aii
+        double aii = a[ext_->diag_ptr[i]];
+        for (long ji = ext_->diag_ptr[i] + 1; ji < col_ptr[i+1]; ++ji) {
+            ext_->dense_col[row_idx[ji]] = (a[ji] /= aii);
+        }
 
-            //// execute task
-            //left_looking_col<false>(j, col_ptr, row_idx, a, ext_->diag_ptr,
-                                    //extt_[tid].col_modification, ext_->task_done);
-        //}
-        /* queue part */
-        while (true) {
-            // get task
-            int task_id = task_head.fetch_add(1, std::memory_order_relaxed);
-            if (task_id >= n) {
-                break;
-            }
-            int j = ext_->task_queue[task_id];
-            //int j = ext_->partitions[task_id];
+        // ajk -= aji * aik
+#pragma omp parallel for schedule(dynamic, 4)
+        for (long ki = ext_->csr.diag_ptr[i] + 1; ki < ext_->csr.row_ptr[i+1]; ++ki) {
+            right_looking_col(ext_->csr.col_idx[ki], col_ptr, row_idx, a,
+                              ext_->col_rowj_start, ext_->dense_col);
+        }
 
-            // execute task
-            left_looking_col<true>(j, col_ptr, row_idx, a, ext_->diag_ptr,
-                                   extt_[tid].col_modification, ext_->task_done);
+        // recover dense_col
+        for (long ji = ext_->diag_ptr[i] + 1; ji < col_ptr[i+1]; ++ji) {
+            ext_->dense_col[row_idx[ji]] = 0;
         }
     }
 
