@@ -2,10 +2,24 @@
 #define SUBTREE
 
 #include <limits>
+#include <memory>
 #include <algorithm>
 #include <atomic>
 
-constexpr const int etree_empty = -1, end_dfs = -5;
+template <class T>
+class ConstBiasArray
+{
+public:
+    ConstBiasArray(T *data) : data_(data), bias_(0) {}
+    ConstBiasArray(T *data, T bias) : data_(data), bias_(bias) {}
+    T operator[](size_t index) const { return data_[index] + bias_; }
+
+private:
+    T *data_;
+    T bias_;
+};
+
+constexpr const int etree_empty = -1;
 
 template <typename Rank>
 static void sort_by_rank_ascend(int *x_begin, int *x_end, const Rank *rank)
@@ -14,7 +28,7 @@ static void sort_by_rank_ascend(int *x_begin, int *x_end, const Rank *rank)
 }
 
 static void build_etree_parent(int n, int vertex_begin, int vertex_end, int vertex_delta,
-                               const long *edge_begins, const long *edge_ends, const int *edge_dst,
+                               const ConstBiasArray<long> &edge_begins, const long *edge_ends, const int *edge_dst,
                                int *parent, int *root /* temporary */)
 {
     for (int v = vertex_begin; v != vertex_end; v += vertex_delta)
@@ -134,7 +148,8 @@ static int divide_subtree(int n, int nproc, const int *first_child, const int *n
             weight_t second_weight = subtree_weight[subtrees[nsubtree - 2]], th = sum_weight / nproc;
             th = (second_weight < th) ? second_weight : th;
             sum_weight -= subtree_weight[last];
-            while(ch != etree_empty && subtree_weight[ch] > th) {
+            while (ch != etree_empty && subtree_weight[ch] > th)
+            {
                 ch = first_child[ch];
             }
             if (ch == etree_empty)
@@ -165,7 +180,7 @@ template <typename weight_t>
 static void schedule_subtree(int n, int nproc, int nsubtree, const int *subtrees, const int *subtree_size,
                              const weight_t *subtree_weight, int *assign, int *part_ptr)
 {
-    weight_t *weight_per_proc = new weight_t[nproc];
+    std::unique_ptr<weight_t[]> weight_per_proc(new weight_t[nproc]);
     for (int i = 0; i < n; ++i)
     {
         assign[i] = etree_empty;
@@ -197,180 +212,319 @@ static void schedule_subtree(int n, int nproc, int nsubtree, const int *subtrees
         part_ptr[i] = pre;
         pre += tmp;
     }
-    delete[] weight_per_proc;
 }
 
 static void build_partitions(int n, int nproc, int nsubtree, const int *subtrees, const int *subtree_size,
-                             const int *parent, const int *first_child, int *next_sibling,
+                             const int *parent, const int *first_child, const int *next_sibling,
                              const int *part_ptr, int *partitions, int *assign)
 {
 
-    std::atomic_int *part_ptr_atomic = new std::atomic_int[nproc];
+    std::unique_ptr<std::atomic_int[]> part_ptr_atomic(new std::atomic_int[nproc]);
 
     for (int i = 0; i < nproc; ++i)
     {
         part_ptr_atomic[i].store(part_ptr[i], std::memory_order_relaxed);
     }
-#pragma omp parallel for num_threads(nproc) schedule(dynamic)
-    for (int i = 0; i < nsubtree; ++i)
+#pragma omp parallel num_threads(nproc)
     {
-        int t = subtrees[nsubtree - 1 - i], proc = assign[t];
-        int nv = subtree_size[t];
-        int k = part_ptr_atomic[proc].fetch_add(nv, std::memory_order_relaxed), end = k + nv;
-        next_sibling[t] = end_dfs;
-        for (int current = t; k < end;) // dfs
+#pragma omp single
+        for (int k = part_ptr[nproc], current = n; k < n;) // dfs
         {
-            int next;
+            int first, next;
+
+            auto next_unassigned = [](int current_, const int *next_, const int *assign_) {
+                while ((current_ != etree_empty) && (assign_[current_] != etree_empty))
+                {
+                    current_ = next_[current_];
+                }
+                return current_;
+            };
 
             /* find the first leaf */
-            for (int first = first_child[current]; first != etree_empty; first = first_child[first])
+            for (first = next_unassigned(first_child[current], next_sibling, assign); first != etree_empty;
+                 first = next_unassigned(first_child[current], next_sibling, assign))
             {
                 current = first;
             }
 
             /* assign this leaf */
             partitions[k++] = current;
-            assign[current] = proc;
 
             /* look for the next */
-            /* next_sibling[n] == END_DFS ends this loop */
-            for (next = next_sibling[current]; next == etree_empty; next = next_sibling[current])
+            for (next = next_unassigned(next_sibling[current], next_sibling, assign); (next == etree_empty) && (k < n);
+                 next = next_unassigned(next_sibling[current], next_sibling, assign))
             {
-
                 /* no more kids : back to the parent node */
                 current = parent[current];
 
                 /* assign the parent node */
                 partitions[k++] = current;
-                assign[current] = proc;
             }
 
             /* go to the next */
             current = next;
         }
-    }
 
-    for (int i = 0, k = part_ptr[nproc]; i < n; ++i)
-    {
-        if (assign[i] == etree_empty)
+#pragma omp for nowait schedule(dynamic)
+        for (int i = 0; i < nsubtree; ++i)
         {
-            partitions[k++] = i;
+            int t = subtrees[nsubtree - 1 - i], proc = assign[t];
+            int nv = subtree_size[t];
+            int k = part_ptr_atomic[proc].fetch_add(nv, std::memory_order_relaxed), end = k + nv;
+            for (int current = t; k < end;) // dfs
+            {
+                int first, next;
+
+                /* find the first leaf */
+                for (first = first_child[current]; first != etree_empty; first = first_child[first])
+                {
+                    current = first;
+                }
+
+                /* assign this leaf */
+                partitions[k++] = current;
+
+                /* look for the next */
+                for (next = next_sibling[current]; (next == etree_empty) && (k < end); next = next_sibling[current])
+                {
+                    /* no more kids : back to the parent node */
+                    current = parent[current];
+
+                    /* assign the parent node */
+                    partitions[k++] = current;
+                }
+
+                /* go to the next */
+                current = next;
+            }
         }
     }
+}
 
-    delete[] part_ptr_atomic;
+static int aggregate_nodes(int n, int *etree /* destroyed */, const int *post_order, int part_begin,
+                           int *sup2col, int *col2sup, int granularity)
+{
+    const int part_size = n - part_begin;
+    int nsuper;
+    int *post_order_inverse = sup2col;
+    int *etree_temp = col2sup;
+
+    /*
+        if         etree[post_order[j]] == post_order[k]
+        then       etree_reorder[j] == k
+        that means etree[post_order[j]] == post_order[etree_reorder[j]]
+        then       etree_temp[j] = etree[post_order[j]]
+        and        post_order[etree_reorder[j]] == etree_temp[j]
+        then       etree_reorder[j] = post_order_inverse[etree_temp[j]]
+    */
+    for (int j = part_begin; j < n; ++j)
+    {
+        int p = post_order[j];
+        etree_temp[j] = etree[p];
+        post_order_inverse[p] = j;
+    }
+    post_order_inverse[n] = n;
+    for (int j = part_begin; j < n; ++j)
+    {
+        etree[j] = post_order_inverse[etree_temp[j]];
+    }
+
+    for (int j = 0; j < n; ++j) {
+        col2sup[j] = etree_empty;
+    }
+    /* aggregation, already in post-order */
+    nsuper = 0;
+    sup2col[nsuper] = part_begin;
+    for (int j = part_begin; j < n;)
+    {
+        int parent = etree[j];
+        int first = j;
+        while (parent != n && (parent - first) < granularity)
+        {
+            j = parent;
+            parent = etree[j];
+        }
+
+        ++j;
+
+        for (int k = first; k < j; ++k)
+        {
+            col2sup[post_order[k]] = nsuper;
+        }
+        sup2col[++nsuper] = j;
+    }
+    return nsuper;
 }
 
 template <typename LoadBalancer>
-static void calculate_levels(int n, int vertex_begin, int vertex_end, int vertex_delta,
-                             const long *edge_begins, const long *edge_ends, const int *edge_dst,
-                             const int *assign, typename LoadBalancer::weight_t *level, LoadBalancer &&load_balancer)
+static void calculate_levels(int n, int nsuper, const int *col2sup, const int *sup2col,
+                             const ConstBiasArray<long> &edge_begins, const long *edge_ends, const int *edge_dst,
+                             typename LoadBalancer::weight_t *level, LoadBalancer &&load_balancer)
 {
     using weight_t = typename LoadBalancer::weight_t;
-    int vertex_rbegin = vertex_end - vertex_delta, vertex_rend = vertex_begin - vertex_delta;
-    for (int i = 0; i < n; ++i)
+    std::unique_ptr<weight_t[]> super_weight(new weight_t[nsuper]);
+
+    for (int i = 0; i < nsuper; ++i)
     {
-        level[i] = n - load_balancer.pipeline_latency(i);
+        weight_t l = 0;
+        for (int j = sup2col[i], j_end = sup2col[i + 1]; j < j_end; ++j)
+        {
+            l += load_balancer.weight_in_queue(j);
+        }
+        super_weight[i] = l;
+        level[i] = nsuper - l;
     }
-    for (int j = vertex_rbegin; j != vertex_rend; j -= vertex_delta)
+
+    for (int i = nsuper - 1; i >= 0; --i)
     {
-        if (assign[j] == etree_empty)
+        weight_t l = level[i];
+        for (int j = sup2col[i], j_end = sup2col[i + 1]; j < j_end; ++j)
         {
             for (long k = edge_begins[j]; k < edge_ends[j]; ++k)
             {
-                int i = edge_dst[k];
-                weight_t l = level[j] - load_balancer.pipeline_latency(i);
-                if (level[i] > l)
-                {
-                    level[i] = l;
+                int ii = col2sup[edge_dst[k]];
+                if(ii != etree_empty) {  // belongs to the queue part
+                    weight_t ll = l - super_weight[ii];
+                    if (level[ii] > ll)
+                    {
+                        level[ii] = ll;
+                    }
                 }
             }
         }
     }
 }
 
-/*
-    n     - matrix dimension
-    nproc - number of processors
-    partitions[part_ptr[i]     : part_ptr[i+1]]     - columns assigned to processor i, in topological order (depth first)
-    partitions[part_ptr[nproc] : n]                 - columns remain in the global task queue, in topological order (breadth first)
+static void build_queue(int n, int nsuper, const int *sup2col, const int *sup_perm,
+                        int *task_queue, int *partitions, int queue_part_begin, int *temp)
+{
+    for (int i = 0, c = queue_part_begin; i < nsuper; ++i)
+    {
+        int isup = sup_perm[i];
+        task_queue[i] = c;
+        for (int j = sup2col[isup], j_end = sup2col[isup + 1]; j < j_end; ++j)
+        {
+            temp[c++] = partitions[j];
+        }
+    }
+    task_queue[nsuper] = n;
+    std::copy(partitions + queue_part_begin, partitions + n, temp + queue_part_begin);
+}
 
-    DAG definition:
-        v depends on edge_dst[edge_begins[v] : edge_ends[v]]
-        edge_dst[edge_begins[v] : edge_ends[v]] is an unordered subset of vertex_begin : vertex_delta : v
-    
-    typename LoadBalancer::weight_t                                     is the data type of weights
-    load_balancer.get_weight(v)                                         returns the weight of the vertex v
-    load_balancer.is_balanced(nproc, nsubtree, max_weight, sum_weight)  tells whether the current subtrees are balanced
-    load_balancer.fallback(nproc, nsubtree)                             tells whether we should fall back to queues
-
-    returns an estimation of the computation cost
- */
 template <typename LoadBalancer>
-static typename LoadBalancer::weight_t
-partition_subtree(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
-                  const long *edge_begins, const long *edge_ends, const int *edge_dst,
-                  int *part_ptr /* output: length nproc + 1 */,
-                  int *partitions /* output: length n */,
-                  LoadBalancer &&load_balancer)
+static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end, int vertex_delta,
+                              ConstBiasArray<long> edge_begins, const long *edge_ends, const int *edge_dst,
+                              int *part_ptr, int *partitions, int *parent,
+                              LoadBalancer &&load_balancer)
 {
     using weight_t = typename LoadBalancer::weight_t;
-    int n = (vertex_begin > vertex_end) ? (vertex_begin - vertex_end) : (vertex_end - vertex_begin);
-    int *parent = new int[n];
-    int *first_child = new int[n + 1];
-    int *next_sibling = new int[n + 1];
-    weight_t *subtree_weight = new weight_t[n + 1];
-    int *subtree_size = new int[n + 1];
-    int *subtrees = new int[n];
-    int *assign = new int[n];
+    std::unique_ptr<int[]> first_child(new int[n + 1]);
+    std::unique_ptr<int[]> next_sibling(new int[n + 1]);
+    std::unique_ptr<weight_t[]> subtree_weight(new weight_t[n + 1]);
+    std::unique_ptr<int[]> subtree_size(new int[n + 1]);
+    std::unique_ptr<int[]> subtrees(new int[n]);
+    std::unique_ptr<int[]> assign(new int[n]);
 
     // construct tree
-    build_etree_parent(n, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst, parent, first_child);
-    build_etree_child_sibling(n, parent, first_child, next_sibling);
+    build_etree_parent(n, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst, parent, first_child.get());
+    build_etree_child_sibling(n, parent, first_child.get(), next_sibling.get());
 
     for (int v = vertex_begin; v != vertex_end; v += vertex_delta)
     {
-        subtree_weight[v] = load_balancer.sequential_cost(v);
+        subtree_weight[v] = load_balancer.weight_in_subtree(v);
         subtree_size[v] = 1;
     }
     subtree_weight[n] = 0;
     subtree_size[n] = 0;
 
-    init_subtree(vertex_begin, vertex_end, vertex_delta, parent, subtree_size, subtree_weight);
+    init_subtree(vertex_begin, vertex_end, vertex_delta, parent, subtree_size.get(), subtree_weight.get());
 
     // divide subtrees
-    int nsubtree = divide_subtree(n, nproc, first_child, next_sibling, subtree_weight, subtrees);
+    int nsubtree = divide_subtree(n, nproc, first_child.get(), next_sibling.get(), subtree_weight.get(), subtrees.get());
 
-    schedule_subtree(n, nproc, nsubtree, subtrees, subtree_size, subtree_weight, assign, part_ptr);
+    schedule_subtree(n, nproc, nsubtree, subtrees.get(), subtree_size.get(), subtree_weight.get(), assign.get(), part_ptr);
 
-    build_partitions(n, nproc, nsubtree, subtrees, subtree_size, parent, first_child, next_sibling, part_ptr, partitions, assign);
+    build_partitions(n, nproc, nsubtree, subtrees.get(), subtree_size.get(),
+                     parent, first_child.get(), next_sibling.get(), part_ptr, partitions, assign.get());
+}
 
-    delete[] first_child;
-    delete[] next_sibling;
-    delete[] subtree_size;
+class NaiveLoadBalancer
+{
+public:
+    using weight_t = int;
+    weight_t weight_in_subtree(int vertex) const
+    {
+        return 1;
+    }
+    weight_t weight_in_queue(int vertex) const
+    {
+        return 1;
+    }
+    constexpr int queue_granularity() const
+    {
+        return 4;
+    }
+};
+
+/*
+    n     - matrix dimension
+    nproc - number of processors
+    partitions[part_ptr[i]     : part_ptr[i+1]]     - columns assigned to processor i, in topological order
+    partitions[part_ptr[nproc] : n]                 - columns remain in the global task queue, in topological order
+
+    DAG definition:
+        v depends on edge_dst[edge_begins[v] : edge_ends[v]]
+        edge_dst[edge_begins[v] : edge_ends[v]] is an unordered subset of vertex_begin : vertex_delta : v
+    
+    typename LoadBalancer::weight_t                          is the data type of weights
+    load_balancer.weight_in_subtree(v)                       returns the weight of the vertex v
+    load_balancer.weight_in_queue(v)                         returns the weight of the vertex v
+    load_balancer.queue_granularity()                        returns the granularity of a task in the queue
+
+    returns the size of the task queue
+    the columns of the i-th task is
+        partitions[task_queue[i] : task_queue[i + 1]]
+            where 0 <= i < return_value 
+               && task_queue[i + 1] - task_queue[i] <= load_balancer.granularity()
+ */
+template <typename LoadBalancer>
+static int
+tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
+              ConstBiasArray<long> edge_begins, const long *edge_ends, const int *edge_dst,
+              int *part_ptr /* output: length nproc + 1 */,
+              int *partitions /* output: length n */,
+              int *&task_queue /* output: allocated by `new`*/,
+              LoadBalancer &&load_balancer)
+{
+    using weight_t = typename LoadBalancer::weight_t;
+    int n = (vertex_begin > vertex_end) ? (vertex_begin - vertex_end) : (vertex_end - vertex_begin);
+    std::unique_ptr<int[]> parent(new int[n]);
+    partition_subtree(n, nproc, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst,
+                      part_ptr, partitions, parent.get(),
+                      std::forward<LoadBalancer &&>(load_balancer));
+
+    std::unique_ptr<int[]> col2sup(new int[n]);
+    std::unique_ptr<int[]> sup2col(new int[n + 1]);
+    int queue_part_begin = part_ptr[nproc];
+    int nsuper = aggregate_nodes(n, parent.get(), partitions, queue_part_begin, sup2col.get(), col2sup.get(), load_balancer.queue_granularity());
+    parent.reset();
+
+    std::unique_ptr<weight_t[]> level(new weight_t[nsuper]);
+    std::unique_ptr<int[]> sup_perm(new int[nsuper]);
 
     // level-set sort
-    weight_t *level = new weight_t[n];
-    calculate_levels(n, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst, assign, level,
+    calculate_levels(n, nsuper, col2sup.get(), sup2col.get(), edge_begins, edge_ends, edge_dst, level.get(),
                      std::forward<LoadBalancer &&>(load_balancer));
-    sort_by_rank_ascend(partitions + part_ptr[nproc], partitions + n, level);
-/*
-    weight_t last_level = level[partitions[n - 1]];
-    weight_t longest = load_balancer.estimate_total_cost(0, last_level - level[partitions[part_ptr[nproc]]]);
-    for (int i = 0; i < nsubtree; ++i)
+    for (int i = 0; i < nsuper; ++i)
     {
-        weight_t path = load_balancer.estimate_total_cost(subtree_weight[subtrees[i]], last_level - level[parent[subtrees[i]]]);
-        longest = (longest > path) ? longest : path;
+        sup_perm[i] = i;
     }
-*/
+    sort_by_rank_ascend(sup_perm.get(), sup_perm.get() + nsuper, level.get());
 
-    delete[] parent;
-    delete[] subtrees;
-    delete[] assign;
-    delete[] subtree_weight;
-    delete[] level;
-
-    return 0;
+    level.reset();
+    task_queue = new int[nsuper + 1];
+    build_queue(n, nsuper, sup2col.get(), sup_perm.get(), task_queue, partitions, queue_part_begin, col2sup.get());
+    return nsuper;
 }
 
 #endif

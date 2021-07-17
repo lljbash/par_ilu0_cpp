@@ -68,12 +68,14 @@ struct ILUSolver::Ext {
     long* diag_ptr = nullptr;
     int* part_ptr = nullptr;
     int* partitions = nullptr;
-    std::atomic_bool* task_done;
+    int* task_queue = nullptr;
+    std::atomic_bool* task_done = nullptr;
 
     struct CSR {
         long* row_ptr = nullptr;
         int* col_idx = nullptr;
-        int* a = nullptr;
+        double* a = nullptr;
+        double* ilu = nullptr;
         long* diag_ptr = nullptr;
         int* nnz_cnt = nullptr;
     } csr;
@@ -81,27 +83,6 @@ struct ILUSolver::Ext {
 
 struct ILUSolver::ThreadLocalExt {
     double* col_modification = nullptr;
-};
-
-class naive_load_balancer {
-public:
-    using weight_t = int;
-    weight_t sequential_cost(int vertex) const {
-        return 1;
-    }
-    weight_t pipeline_latency(int vertex) const {  // 假设j依赖i，则parallel_latency(j)指的是在任务队列中，从i的完成到j的完成之间的时间差
-        return 1;
-    }
-    /*
-    bool is_balanced(int nproc, int nsubtree, weight_t max_weight, weight_t sum_weight) const {
-        return max_weight * nproc < sum_weight;
-    }
-    bool fallback(int nproc, int nsubtree) const { // 子树数量实在太少时回退
-        return nsubtree < nproc;
-    }
-    weight_t estimate_total_cost(weight_t subtree_part, weight_t queue_part) const {
-        return subtree_part + queue_part + queue_part / 16;
-    }*/
 };
 
 void             
@@ -113,6 +94,7 @@ ILUSolver::SetupMatrix() {
     int n = aMatrix_.GetSize();
     long* col_ptr = aMatrix_.GetColumnPointer();
     int* row_idx = aMatrix_.GetRowIndex();
+    double* a = aMatrix_.GetValue();
     long nnz = aMatrix_.GetNonZeros();
     ext_ = new Ext;
     ext_->diag_ptr = new long[n];
@@ -121,9 +103,11 @@ ILUSolver::SetupMatrix() {
     ext_->task_done = new std::atomic_bool[n];
     ext_->csr.row_ptr = new long[n+1](); // initialized to zero
     ext_->csr.col_idx = new int[nnz];
-    //ext_->csr.a = new int[nnz];
+    ext_->csr.a = new double[nnz];
+    ext_->csr.ilu = new double[nnz];
     ext_->csr.diag_ptr = new long[n];
-    ext_->csr.nnz_cnt = new int[n](); // initialized to zero
+    int *nnz_cnt = new int[n](); // initialized to zero
+    ON_SCOPE_EXIT { delete[] nnz_cnt; };
 
     // get diag_ptr
 #pragma omp parallel
@@ -149,17 +133,18 @@ ILUSolver::SetupMatrix() {
 #pragma omp parallel for
         for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
             int i = row_idx[ji];
-            long ii = ext_->csr.row_ptr[i] + ext_->csr.nnz_cnt[i];
+            long ii = ext_->csr.row_ptr[i] + nnz_cnt[i];
             ext_->csr.col_idx[ii] = j;
-            ++ext_->csr.nnz_cnt[i];
+            ext_->csr.a[ii] = a[ji];
+            ++nnz_cnt[i];
             if (i == j) {
                 ext_->csr.diag_ptr[i] = ii;
             }
         }
     }
 
-    /* 0, n, 1 or n-1, -1, -1 */
-    int cost = partition_subtree(threads_, 0, n, 1, col_ptr, ext_->diag_ptr, row_idx, ext_->part_ptr, ext_->partitions, naive_load_balancer());
+    int queue_size = tree_schedule(threads_, 0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, 
+                             ext_->part_ptr, ext_->partitions, ext_->task_queue, NaiveLoadBalancer());
 
     extt_ = new ThreadLocalExt[threads_];
 #pragma omp parallel
@@ -168,7 +153,7 @@ ILUSolver::SetupMatrix() {
         extt_[tid].col_modification = new double[n];
     }
 
-    iluMatrix_ = aMatrix_;
+    //iluMatrix_ = aMatrix_;
 }
 
 struct Skip {
@@ -232,11 +217,16 @@ ILUSolver::Factorize() {
     // HERE, do triangle decomposition 
     // to calculate the values in L and U
     //iluMatrix_ = aMatrix_;
-    int n = iluMatrix_.GetSize();
-    long* col_ptr = iluMatrix_.GetColumnPointer();
-    int* row_idx = iluMatrix_.GetRowIndex();
-    double* a = iluMatrix_.GetValue();
-    std::memcpy(a, aMatrix_.GetValue(), sizeof(double[aMatrix_.GetNonZeros()]));
+    int n = aMatrix_.GetSize();
+    //long* col_ptr = iluMatrix_.GetColumnPointer();
+    //int* row_idx = iluMatrix_.GetRowIndex();
+    //double* a = iluMatrix_.GetValue();
+    //std::memcpy(a, aMatrix_.GetValue(), sizeof(double[aMatrix_.GetNonZeros()]));
+    long* col_ptr = ext_->csr.row_ptr;
+    long* diag_ptr = ext_->csr.diag_ptr;
+    int* row_idx = ext_->csr.col_idx;
+    double* a = ext_->csr.ilu;
+    std::memcpy(a, ext_->csr.a, sizeof(double[aMatrix_.GetNonZeros()]));
     std::atomic_int task_head{ext_->part_ptr[threads_]};
 #pragma omp parallel for
     for (int j = 0; j < n; ++j) {
@@ -251,9 +241,9 @@ ILUSolver::Factorize() {
         /* independent part */
         for(int k = ext_->part_ptr[tid]; k < ext_->part_ptr[tid + 1]; ++k) {
             int j = ext_->partitions[k];
-            
+
             // execute task
-            left_looking_col<Skip, NonTranspose>(j, col_ptr, row_idx, a, ext_->diag_ptr,
+            left_looking_col<Skip, Transpose>(j, col_ptr, row_idx, a, diag_ptr,
                                     extt_[tid].col_modification, ext_->task_done);
         }
         /* queue part */
@@ -266,7 +256,7 @@ ILUSolver::Factorize() {
             int j = ext_->partitions[task_id];
 
             // execute task
-            left_looking_col<Wait, NonTranspose>(j, col_ptr, row_idx, a, ext_->diag_ptr,
+            left_looking_col<Wait, Transpose>(j, col_ptr, row_idx, a, diag_ptr,
                                    extt_[tid].col_modification, ext_->task_done);
         }
     }
@@ -278,24 +268,21 @@ void
 ILUSolver::Substitute() {
     // HERE, use the L and U calculated by ILUSolver::Factorize to solve the triangle systems 
     // to calculate the x
-    int n = iluMatrix_.GetSize();
-    long* col_ptr = iluMatrix_.GetColumnPointer();
-    int* row_idx = iluMatrix_.GetRowIndex();
-    double* a = iluMatrix_.GetValue();
+    int n = aMatrix_.GetSize();
     x_ = new double[n];
     memcpy(x_, b_, sizeof(double[n]));
-    for (int j = 0; j < n; ++j) {
-        for (long ji = ext_->diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
-            int i = row_idx[ji];
-            x_[i] -= x_[j] * a[ji];
+    for (int i = 0; i < n; ++i) {
+        for (long ii = ext_->csr.row_ptr[i]; ii < ext_->csr.diag_ptr[i]; ++ii) {
+            int j = ext_->csr.col_idx[ii];
+            x_[i] -= x_[j] * ext_->csr.ilu[ii];
         }
     }
-    for (int j = n - 1; j >= 0; --j) {
-        x_[j] /= a[ext_->diag_ptr[j]];
-        for (long ji = col_ptr[j]; ji < ext_->diag_ptr[j]; ++ji) {
-            int i = row_idx[ji];
-            x_[i] -= x_[j] * a[ji];
+    for (int i = n - 1; i >= 0; --i) {
+        for (long ii = ext_->csr.diag_ptr[i] + 1; ii < ext_->csr.row_ptr[i+1]; ++ii) {
+            int j = ext_->csr.col_idx[ii];
+            x_[i] -= x_[j] * ext_->csr.ilu[ii];
         }
+        x_[i] /= ext_->csr.ilu[ext_->csr.diag_ptr[i]];
     }
 }
 
@@ -304,5 +291,21 @@ ILUSolver::CollectLUMatrix() {
     // put L and U together into iluMatrix_ 
     // as the diag of L is 1, set the diag of iluMatrix_ with u 
     // iluMatrix_ should have the same size and patterns with aMatrix_
-}    
+    iluMatrix_ = aMatrix_;
+    int n = iluMatrix_.GetSize();
+    long* col_ptr = iluMatrix_.GetColumnPointer();
+    int* row_idx = iluMatrix_.GetRowIndex();
+    double* a = iluMatrix_.GetValue();
+    int *nnz_cnt = new int[n](); // initialized to zero
+    ON_SCOPE_EXIT { delete[] nnz_cnt; };
+    for (int j = 0; j < n; ++j) {
+#pragma omp parallel for
+        for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
+            int i = row_idx[ji];
+            long ii = ext_->csr.row_ptr[i] + nnz_cnt[i];
+            a[ji] = ext_->csr.ilu[ii];
+            ++nnz_cnt[i];
+        }
+    }
+}
 
