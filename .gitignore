@@ -1,5 +1,6 @@
 case
 ilusolver
+.vscode
 
 ### C++ ###
 # Prerequisites
@@ -104,7 +105,8 @@ $RECYCLE.BIN/
 .LSOverride
 
 # Icon must end with two \r
-Icon
+Icon
+
 
 # Thumbnails
 ._*

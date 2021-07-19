@@ -20,6 +20,7 @@ private:
 };
 
 constexpr const int etree_empty = -1;
+using unique_int_ptr = std::unique_ptr<int[]>;
 
 template <typename Rank>
 static void sort_by_rank_ascend(int *x_begin, int *x_end, const Rank *rank)
@@ -329,7 +330,8 @@ static int aggregate_nodes(int n, int *etree /* destroyed */, const int *post_or
         etree[j] = post_order_inverse[etree_temp[j]];
     }
 
-    for (int j = 0; j < n; ++j) {
+    for (int j = 0; j < n; ++j)
+    {
         col2sup[j] = etree_empty;
     }
     /* aggregation, already in post-order */
@@ -357,7 +359,7 @@ static int aggregate_nodes(int n, int *etree /* destroyed */, const int *post_or
 }
 
 template <typename LoadBalancer>
-static void calculate_levels(int n, int nsuper, const int *col2sup, const int *sup2col,
+static void calculate_levels(int nsuper, const int *col2sup, const int *sup2col, const int *post_order,
                              const ConstBiasArray<long> &edge_begins, const long *edge_ends, const int *edge_dst,
                              typename LoadBalancer::weight_t *level, LoadBalancer &&load_balancer)
 {
@@ -378,12 +380,14 @@ static void calculate_levels(int n, int nsuper, const int *col2sup, const int *s
     for (int i = nsuper - 1; i >= 0; --i)
     {
         weight_t l = level[i];
-        for (int j = sup2col[i], j_end = sup2col[i + 1]; j < j_end; ++j)
+        for (int v = sup2col[i], v_end = sup2col[i + 1]; v < v_end; ++v)
         {
+            int j = post_order[v];
             for (long k = edge_begins[j]; k < edge_ends[j]; ++k)
             {
                 int ii = col2sup[edge_dst[k]];
-                if(ii != etree_empty) {  // belongs to the queue part
+                if ((ii != etree_empty) && (ii != i))
+                { // belongs to the queue part && not the same super
                     weight_t ll = l - super_weight[ii];
                     if (level[ii] > ll)
                     {
@@ -398,17 +402,15 @@ static void calculate_levels(int n, int nsuper, const int *col2sup, const int *s
 static void build_queue(int n, int nsuper, const int *sup2col, const int *sup_perm,
                         int *task_queue, int *partitions, int queue_part_begin, int *temp)
 {
-    for (int i = 0, c = queue_part_begin; i < nsuper; ++i)
+    int *t = temp + queue_part_begin;
+    for (int i = 0; i < nsuper; ++i)
     {
         int isup = sup_perm[i];
-        task_queue[i] = c;
-        for (int j = sup2col[isup], j_end = sup2col[isup + 1]; j < j_end; ++j)
-        {
-            temp[c++] = partitions[j];
-        }
+        task_queue[i] = t - temp;
+        t = std::copy(partitions + sup2col[isup], partitions + sup2col[isup + 1], t);
     }
     task_queue[nsuper] = n;
-    std::copy(partitions + queue_part_begin, partitions + n, temp + queue_part_begin);
+    std::copy(temp + queue_part_begin, temp + n, partitions + queue_part_begin);
 }
 
 template <typename LoadBalancer>
@@ -418,12 +420,13 @@ static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end
                               LoadBalancer &&load_balancer)
 {
     using weight_t = typename LoadBalancer::weight_t;
-    std::unique_ptr<int[]> first_child(new int[n + 1]);
-    std::unique_ptr<int[]> next_sibling(new int[n + 1]);
-    std::unique_ptr<weight_t[]> subtree_weight(new weight_t[n + 1]);
-    std::unique_ptr<int[]> subtree_size(new int[n + 1]);
-    std::unique_ptr<int[]> subtrees(new int[n]);
-    std::unique_ptr<int[]> assign(new int[n]);
+    using unique_wt_ptr = std::unique_ptr<weight_t[]>;
+    unique_int_ptr first_child(new int[n + 1]);
+    unique_int_ptr next_sibling(new int[n + 1]);
+    unique_wt_ptr subtree_weight(new weight_t[n + 1]);
+    unique_int_ptr subtree_size(new int[n + 1]);
+    unique_int_ptr subtrees(new int[n]);
+    unique_int_ptr assign(new int[n]);
 
     // construct tree
     build_etree_parent(n, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst, parent, first_child.get());
@@ -497,30 +500,31 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
               LoadBalancer &&load_balancer)
 {
     using weight_t = typename LoadBalancer::weight_t;
+    using unique_wt_ptr = std::unique_ptr<weight_t[]>;
     int n = (vertex_begin > vertex_end) ? (vertex_begin - vertex_end) : (vertex_end - vertex_begin);
-    std::unique_ptr<int[]> parent(new int[n]);
+    unique_int_ptr parent(new int[n]);
     partition_subtree(n, nproc, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst,
                       part_ptr, partitions, parent.get(),
                       std::forward<LoadBalancer &&>(load_balancer));
 
-    std::unique_ptr<int[]> col2sup(new int[n]);
-    std::unique_ptr<int[]> sup2col(new int[n + 1]);
+    unique_int_ptr col2sup(new int[n]);
+    unique_int_ptr sup2col(new int[n + 1]);
     int queue_part_begin = part_ptr[nproc];
-    int nsuper = aggregate_nodes(n, parent.get(), partitions, queue_part_begin, sup2col.get(), col2sup.get(), load_balancer.queue_granularity());
+    int nsuper = aggregate_nodes(n, parent.get(), partitions, queue_part_begin,
+                                 sup2col.get(), col2sup.get(), load_balancer.queue_granularity());
     parent.reset();
 
-    std::unique_ptr<weight_t[]> level(new weight_t[nsuper]);
-    std::unique_ptr<int[]> sup_perm(new int[nsuper]);
+    unique_wt_ptr level(new weight_t[nsuper]);
+    unique_int_ptr sup_perm(new int[nsuper]);
 
     // level-set sort
-    calculate_levels(n, nsuper, col2sup.get(), sup2col.get(), edge_begins, edge_ends, edge_dst, level.get(),
+    calculate_levels(nsuper, col2sup.get(), sup2col.get(), partitions, edge_begins, edge_ends, edge_dst, level.get(),
                      std::forward<LoadBalancer &&>(load_balancer));
     for (int i = 0; i < nsuper; ++i)
     {
         sup_perm[i] = i;
     }
     sort_by_rank_ascend(sup_perm.get(), sup_perm.get() + nsuper, level.get());
-
     level.reset();
     task_queue = new int[nsuper + 1];
     build_queue(n, nsuper, sup2col.get(), sup_perm.get(), task_queue, partitions, queue_part_begin, col2sup.get());
