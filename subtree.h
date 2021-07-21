@@ -465,7 +465,7 @@ public:
     }
     constexpr int queue_granularity() const
     {
-        return 1;
+        return 4;
     }
 };
 

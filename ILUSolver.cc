@@ -146,9 +146,11 @@ struct ILUSolver::Ext {
 
 struct ILUSolver::ThreadLocalExt {
     double* col_modification = nullptr;
+    long* interupt = nullptr;
 
     ~ThreadLocalExt() {
         destroy_array(col_modification);
+        destroy_array(interupt);
     }
 };
 
@@ -251,7 +253,8 @@ ILUSolver::SetupMatrix() {
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
-        extt_[tid].col_modification = new double[n];
+        extt_[tid].col_modification = new double[n * NaiveLoadBalancer().queue_granularity()];
+        extt_[tid].interupt = new long[NaiveLoadBalancer().queue_granularity()];
     }
 
     if (!ext_->transpose_fact) {
@@ -259,9 +262,9 @@ ILUSolver::SetupMatrix() {
     }
 }
 
-template <class JobS, class JobW>
+template <class JobS, class JobW, class JobI>
 static void subpart_parallel_run(int n, const SubtreePartition& subpart,
-                                 const JobS& fs, const JobW& fw,
+                                 const JobS& fs, const JobW& fw, const JobI& fi,
                                  std::atomic_bool* task_done) {
     std::atomic_int task_head{0};
 #pragma omp parallel for
@@ -285,18 +288,27 @@ static void subpart_parallel_run(int n, const SubtreePartition& subpart,
 
             // execute task
             for (int k = subpart.task_queue[task_id]; k < subpart.task_queue[task_id+1]; ++k) {
-                fw(subpart.partitions[k], tid);
+                fi(subpart.partitions[k], tid, k - subpart.task_queue[task_id]);
+            }
+            for (int k = subpart.task_queue[task_id]; k < subpart.task_queue[task_id+1]; ++k) {
+                fw(subpart.partitions[k], tid, k - subpart.task_queue[task_id]);
             }
         }
     }
 }
 
 struct Skip {
-    static void busy_waiting(std::atomic_bool* cond) {}
+    static bool busy_waiting(std::atomic_bool*) { return true; }
 };
 struct Wait {
-    static void busy_waiting(std::atomic_bool* cond) {
+    static bool busy_waiting(std::atomic_bool* cond) {
         while (!cond->load(std::memory_order_acquire)); // busy waiting
+        return true;
+    }
+};
+struct Interupt {
+    static int busy_waiting(std::atomic_bool* cond) {
+        return cond->load(std::memory_order_acquire);
     }
 };
 
@@ -325,14 +337,22 @@ using NonTranspose = DiagnalScale<ScaleL, ScaleU>;
 using Transpose = DiagnalScale<ScaleU, ScaleL>;  // For CSR format
 
 template <typename W, typename T>
-static void left_looking_col(int j, long* col_ptr, int* row_idx, double* a, long* diag_ptr,
-                             double* col_modification, std::atomic_bool* task_done) {
-    for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
-        col_modification[row_idx[ji]] = 0;
+static long left_looking_col(int j, long* col_ptr, int* row_idx, double* a, long* diag_ptr,
+                             double* col_modification, std::atomic_bool* task_done,
+                             long interupt) { // -1: new; -2: finished; >= 0: interupted
+    if (interupt == -2) {
+        return -2;
     }
-    for (long ji = col_ptr[j]; ji < diag_ptr[j]; ++ji) {
+    if (interupt == -1) {
+        for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
+            col_modification[row_idx[ji]] = 0;
+        }
+    }
+    for (long ji = interupt >= 0 ? interupt : col_ptr[j]; ji < diag_ptr[j]; ++ji) {
         int k = row_idx[ji];
-        W::busy_waiting(&task_done[k]);
+        if (!W::busy_waiting(&task_done[k])) {
+            return ji;
+        }
         a[ji] = T::scale_U(a[ji] + col_modification[k], a[diag_ptr[k]]);
         for (long ki = diag_ptr[k] + 1; ki < col_ptr[k+1]; ++ki) {
             col_modification[row_idx[ki]] -= a[ki] * a[ji];
@@ -345,6 +365,7 @@ static void left_looking_col(int j, long* col_ptr, int* row_idx, double* a, long
     }
 
     task_done[j].store(true, std::memory_order_release);
+    return -2;
 }
 
 bool             
@@ -361,6 +382,7 @@ ILUSolver::Factorize() {
     SubtreePartition* subpart;
     decltype(left_looking_col<Skip, NonTranspose>)* llcs;
     decltype(left_looking_col<Wait, NonTranspose>)* llcw;
+    decltype(left_looking_col<Interupt, NonTranspose>)* llci;
     if (!ext_->transpose_fact) {
         col_ptr = iluMatrix_.GetColumnPointer();
         diag_ptr = ext_->csc_diag_ptr;
@@ -373,6 +395,7 @@ ILUSolver::Factorize() {
         subpart = &ext_->subpart_ucol;
         llcs = left_looking_col<Skip, NonTranspose>;
         llcw = left_looking_col<Wait, NonTranspose>;
+        llci = left_looking_col<Interupt, NonTranspose>;
     }
     else {
         col_ptr = ext_->csr.row_ptr;
@@ -386,15 +409,19 @@ ILUSolver::Factorize() {
         subpart = &ext_->subpart_lrow;
         llcs = left_looking_col<Skip, Transpose>;
         llcw = left_looking_col<Wait, Transpose>;
+        llci = left_looking_col<Interupt, Transpose>;
     }
 
     auto fs = [col_ptr, row_idx, a, diag_ptr, this, llcs](int j, int tid) {
-        llcs(j, col_ptr, row_idx, a, diag_ptr, extt_[tid].col_modification, ext_->task_done);
+        llcs(j, col_ptr, row_idx, a, diag_ptr, extt_[tid].col_modification, ext_->task_done, -1);
     };
-    auto fw = [col_ptr, row_idx, a, diag_ptr, this, llcw](int j, int tid) {
-        llcw(j, col_ptr, row_idx, a, diag_ptr, extt_[tid].col_modification, ext_->task_done);
+    auto fw = [col_ptr, row_idx, a, diag_ptr, this, llcw, n](int j, int tid, int k) {
+        llcw(j, col_ptr, row_idx, a, diag_ptr, extt_[tid].col_modification + k * n, ext_->task_done, extt_[tid].interupt[k]);
     };
-    subpart_parallel_run(n, *subpart, fs, fw, ext_->task_done);
+    auto fi = [col_ptr, row_idx, a, diag_ptr, this, llci, n](int j, int tid, int k) {
+        extt_[tid].interupt[k] = llci(j, col_ptr, row_idx, a, diag_ptr, extt_[tid].col_modification + k * n, ext_->task_done, -1);
+    };
+    subpart_parallel_run(n, *subpart, fs, fw, fi, ext_->task_done);
 
     if (ext_->paralleled_subs && !ext_->transpose_fact) {
 #pragma omp parallel for schedule(static, 2048)
@@ -407,29 +434,45 @@ ILUSolver::Factorize() {
 }
 
 template <typename W>
-void substitute_row_L(int i, const long* row_ptr, const long* diag_ptr, const int* col_idx,
-                        const double* lvalue, double* x, std::atomic_bool* task_done) {
+long substitute_row_L(int i, const long* row_ptr, const long* diag_ptr, const int* col_idx,
+                        const double* lvalue, double* x, std::atomic_bool* task_done,
+                        long interupt) {
+    if (interupt == -2) {
+        return -2;
+    }
     double xi = x[i];
-    for (long ii = row_ptr[i]; ii < diag_ptr[i]; ++ii) {
+    for (long ii = interupt >= 0 ? interupt : row_ptr[i]; ii < diag_ptr[i]; ++ii) {
         int j = col_idx[ii];
-        W::busy_waiting(&task_done[j]);
+        if (!W::busy_waiting(&task_done[j])) {
+            x[i] = xi;
+            return ii;
+        }
         xi -= x[j] * lvalue[ii];
     }
     x[i] = xi;
     task_done[i].store(true, std::memory_order_release);
+    return -2;
 }
 
 template <typename W>
-void substitute_row_U(int i, const long* row_ptr, const long* diag_ptr, const int* col_idx,
-                        const double* uvalue, double* x, std::atomic_bool* task_done) {
+long substitute_row_U(int i, const long* row_ptr, const long* diag_ptr, const int* col_idx,
+                        const double* uvalue, double* x, std::atomic_bool* task_done,
+                        long interupt) {
+    if (interupt == -2) {
+        return -2;
+    }
     double xi = x[i];
     for (long ii = diag_ptr[i] + 1; ii < row_ptr[i+1]; ++ii) {
         int j = col_idx[ii];
-        W::busy_waiting(&task_done[j]);
+        if (!W::busy_waiting(&task_done[j])) {
+            x[i] = xi;
+            return ii;
+        }
         xi -= x[j] * uvalue[ii];
     }
     x[i] = xi / uvalue[diag_ptr[i]];
     task_done[i].store(true, std::memory_order_release);
+    return -2;
 }
 
 void
@@ -458,14 +501,16 @@ ILUSolver::Substitute() {
         }
     }
     else {
-#define SUBS_ROW(D, W) substitute_row_##D<W>(i, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->csr.a, x_, ext_->task_done)
-        auto lfs = [this](int i, int) { SUBS_ROW(L, Skip); };
-        auto lfw = [this](int i, int) { SUBS_ROW(L, Wait); };
-        auto ufs = [this](int i, int) { SUBS_ROW(U, Skip); };
-        auto ufw = [this](int i, int) { SUBS_ROW(U, Wait); };
+#define SUBS_ROW(D, W, I) substitute_row_##D<W>(i, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->csr.a, x_, ext_->task_done, I)
+        auto lfs = [this](int i, int) { SUBS_ROW(L, Skip, -1); };
+        auto lfw = [this](int i, int tid, int k) { SUBS_ROW(L, Wait, extt_[tid].interupt[k]); };
+        auto lfi = [this](int i, int tid, int k) { extt_[tid].interupt[k] = SUBS_ROW(L, Interupt, -1); };
+        auto ufs = [this](int i, int) { SUBS_ROW(U, Skip, -1); };
+        auto ufw = [this](int i, int tid, int k) { SUBS_ROW(U, Wait, extt_[tid].interupt[k]); };
+        auto ufi = [this](int i, int tid, int k) { extt_[tid].interupt[k] = SUBS_ROW(U, Interupt, -1); };
 #undef SUBS_ROW
-        subpart_parallel_run(n, ext_->subpart_lrow, lfs, lfw, ext_->task_done);
-        subpart_parallel_run(n, ext_->subpart_urow, ufs, ufw, ext_->task_done);
+        subpart_parallel_run(n, ext_->subpart_lrow, lfs, lfw, lfi, ext_->task_done);
+        subpart_parallel_run(n, ext_->subpart_urow, ufs, ufw, ufi, ext_->task_done);
     }
 }
 
