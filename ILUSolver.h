@@ -16,10 +16,7 @@ public:
       , b_(nullptr)
     {}
 
-    ~ILUSolver() {
-        if (x_) { delete [] x_; x_ = nullptr; } 
-        if (b_) { delete [] b_; b_ = nullptr; } 
-    }
+    ~ILUSolver();
     const double*    GetSolution()  const { return x_; }
     const CCSMatrix& GetILUMatrix() const { return iluMatrix_; }
     int GetDimension() const { return dimension_; }

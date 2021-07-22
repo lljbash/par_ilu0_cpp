@@ -361,7 +361,7 @@ static int aggregate_nodes(int n, int *etree /* destroyed */, const int *post_or
 template <typename LoadBalancer>
 static void calculate_levels(int nsuper, const int *col2sup, const int *sup2col, const int *post_order,
                              const ConstBiasArray<long> &edge_begins, const long *edge_ends, const int *edge_dst,
-                             typename LoadBalancer::weight_t *level, LoadBalancer &&load_balancer)
+                             typename LoadBalancer::weight_t *level, const LoadBalancer &load_balancer)
 {
     using weight_t = typename LoadBalancer::weight_t;
     std::unique_ptr<weight_t[]> super_weight(new weight_t[nsuper]);
@@ -417,7 +417,7 @@ template <typename LoadBalancer>
 static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end, int vertex_delta,
                               ConstBiasArray<long> edge_begins, const long *edge_ends, const int *edge_dst,
                               int *part_ptr, int *partitions, int *parent,
-                              LoadBalancer &&load_balancer)
+                              const LoadBalancer &load_balancer)
 {
     using weight_t = typename LoadBalancer::weight_t;
     using unique_wt_ptr = std::unique_ptr<weight_t[]>;
@@ -497,7 +497,7 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
               int *part_ptr /* output: length nproc + 1 */,
               int *partitions /* output: length n */,
               int *&task_queue /* output: allocated by `new`*/,
-              LoadBalancer &&load_balancer)
+              const LoadBalancer &load_balancer)
 {
     using weight_t = typename LoadBalancer::weight_t;
     using unique_wt_ptr = std::unique_ptr<weight_t[]>;
@@ -505,7 +505,7 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
     unique_int_ptr parent(new int[n]);
     partition_subtree(n, nproc, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst,
                       part_ptr, partitions, parent.get(),
-                      std::forward<LoadBalancer &&>(load_balancer));
+                      load_balancer);
 
     unique_int_ptr col2sup(new int[n]);
     unique_int_ptr sup2col(new int[n + 1]);
@@ -519,7 +519,7 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
 
     // level-set sort
     calculate_levels(nsuper, col2sup.get(), sup2col.get(), partitions, edge_begins, edge_ends, edge_dst, level.get(),
-                     std::forward<LoadBalancer &&>(load_balancer));
+                     load_balancer);
     for (int i = 0; i < nsuper; ++i)
     {
         sup_perm[i] = i;
