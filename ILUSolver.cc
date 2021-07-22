@@ -434,7 +434,7 @@ double substitute_row_U(int i, const long* row_ptr, const long* diag_ptr, const 
                         const double* uvalue, const double* x,
                         std::atomic_bool* task_done) {
     double xi = x[i];
-    for (long ii = diag_ptr[i] + 1; ii < row_ptr[i+1]; ++ii) {
+    for (long ii = row_ptr[i+1] - 1; ii > diag_ptr[i]; --ii) {
         int j = col_idx[ii];
         W::busy_waiting(&task_done[j]);
         xi -= x[j] * uvalue[ii];
