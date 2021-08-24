@@ -4,6 +4,11 @@
 #include <memory.h>
 #include "ILUSolver.h"
 
+ILUSolver::~ILUSolver() {
+    if (x_) { delete [] x_; x_ = nullptr; }
+    if (b_) { delete [] b_; b_ = nullptr; }
+}
+
 bool             
 ILUSolver::ReadRhs(const std::string& fname, bool sparse) {
     if (b_) { delete [] b_; }
