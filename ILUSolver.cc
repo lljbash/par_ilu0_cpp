@@ -91,6 +91,7 @@ constexpr int fact_granu = 4;
 constexpr double subs_fixed_subtree_weight = 1;
 constexpr double subs_fixed_queue_weight = 2;
 constexpr int subs_granu = 6;
+constexpr int subs_max_threads = 8;
 
 }
 
@@ -152,6 +153,7 @@ struct ILUSolver::Ext {
     bool transpose_fact;
     bool paralleled_subs;
     bool packed;
+    int subs_threads = 1;
 
     CSRMatrix csr;
 
@@ -257,10 +259,11 @@ ILUSolver::SetupMatrix() {
         ext_->transpose_fact = rl_est > ul_est;
         //ext_->transpose_fact = false;
         ext_->paralleled_subs = true;
+        ext_->subs_threads = std::min(threads_, param::subs_max_threads);
     }
     ext_->packed = threads_ > 1 && n >= param::granu_min_n;
     puts(ext_->transpose_fact ? "up-looking" : "right-looking");
-    puts(ext_->paralleled_subs ? "par-subs" : "seq-subs");
+    printf(ext_->paralleled_subs ? "par-subs %d\n" : "seq-subs\n", ext_->subs_threads);
     puts(ext_->packed ? "packed tasks" : "single task");
 
     FixedLoadBalancer lb_fact{param::fact_fixed_subtree_weight, param::fact_fixed_queue_weight, 1};
@@ -270,19 +273,19 @@ ILUSolver::SetupMatrix() {
         lb_subs.queue_granularity_ = param::subs_granu;
     }
 
-    auto get_subpart = [this, n](int p2, int p3, int p4, ConstBiasArray<long> p5, const long* p6, const int* p7, SubtreePartition& out, const FixedLoadBalancer& lb) {
-        out.create(threads_, n);
-        out.ntasks = tree_schedule(threads_, p2, p3, p4, p5, p6, p7, out.part_ptr, out.partitions, out.task_queue, lb);
+    auto get_subpart = [n](int p1, int p2, int p3, int p4, ConstBiasArray<long> p5, const long* p6, const int* p7, SubtreePartition& out, const FixedLoadBalancer& lb) {
+        out.create(p1, n);
+        out.ntasks = tree_schedule(p1, p2, p3, p4, p5, p6, p7, out.part_ptr, out.partitions, out.task_queue, lb);
     };
     if (!ext_->transpose_fact) {
-        get_subpart(0, n, 1, col_ptr, ext_->csc_diag_ptr, row_idx, ext_->subpart_fact, lb_fact);
+        get_subpart(threads_, 0, n, 1, col_ptr, ext_->csc_diag_ptr, row_idx, ext_->subpart_fact, lb_fact);
     }
     else {
-        get_subpart(0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->subpart_fact, lb_fact);
+        get_subpart(threads_, 0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->subpart_fact, lb_fact);
     }
     if (ext_->paralleled_subs) {
-        get_subpart(0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->subpart_subs_l, lb_subs);
-        get_subpart(n-1, -1, -1, {ext_->csr.diag_ptr, 1}, ext_->csr.row_ptr + 1, ext_->csr.col_idx, ext_->subpart_subs_u, lb_subs);
+        get_subpart(ext_->subs_threads, 0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->subpart_subs_l, lb_subs);
+        get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr.diag_ptr, 1}, ext_->csr.row_ptr + 1, ext_->csr.col_idx, ext_->subpart_subs_u, lb_subs);
     }
 
     destroy_array(extt_);
@@ -333,11 +336,11 @@ static void subpart_parallel_run(int threads, int n, const SubtreePartition& sub
         task_head.store(0, std::memory_order_relaxed);
         task_tail = subpart.ntasks;
     }
-#pragma omp parallel for
+#pragma omp parallel for schedule(static, 16) num_threads(threads)
         for (int j = 0; j < n; ++j) {
             task_done[j].store(false, std::memory_order_relaxed);
         }
-#pragma omp parallel
+#pragma omp parallel num_threads(threads)
     {
         int tid = omp_get_thread_num();
         /* independent part */
@@ -586,6 +589,7 @@ ILUSolver::Substitute() {
         }
     }
     else if (ext_->packed) {
+        int threads = ext_->subs_threads;
 #define SUBS_ROW(D, W) substitute_row_##D<W,false>(i, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->csr.a, x_, ext_->task_done)
 #define SUBS_ROWR(D, W, I) substitute_row_##D<W,true>(i, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->csr.a, x_, ext_->task_done, I)
         auto lfs = [this](int i, int) { SUBS_ROW(L, Skip); };
@@ -594,16 +598,17 @@ ILUSolver::Substitute() {
         auto ufs = [this](int i, int) { SUBS_ROW(U, Skip); };
         auto ufw = [this](int i, int tid, int k) { SUBS_ROWR(U, Wait, extt_[tid].interupt[k]); };
         auto ufi = [this](int i, int tid, int k) { extt_[tid].interupt[k] = SUBS_ROW(U, Interupt); };
-        subpart_parallel_run(threads_, n, ext_->subpart_subs_l, lfs, lfw, lfi, ext_->task_done);
-        subpart_parallel_run(threads_, n, ext_->subpart_subs_u, ufs, ufw, ufi, ext_->task_done);
+        subpart_parallel_run(threads, n, ext_->subpart_subs_l, lfs, lfw, lfi, ext_->task_done);
+        subpart_parallel_run(threads, n, ext_->subpart_subs_u, ufs, ufw, ufi, ext_->task_done);
     }
     else {
+        int threads = ext_->subs_threads;
         auto lfs = [this](int i, int) { SUBS_ROW(L, Skip); };
         auto lfw = [this](int i, int, int) { SUBS_ROW(L, Wait); };
         auto ufs = [this](int i, int) { SUBS_ROW(U, Skip); };
         auto ufw = [this](int i, int, int) { SUBS_ROW(U, Wait); };
-        subpart_parallel_run(threads_, n, ext_->subpart_subs_l, lfs, lfw, nullptr, ext_->task_done);
-        subpart_parallel_run(threads_, n, ext_->subpart_subs_u, ufs, ufw, nullptr, ext_->task_done);
+        subpart_parallel_run(threads, n, ext_->subpart_subs_l, lfs, lfw, nullptr, ext_->task_done);
+        subpart_parallel_run(threads, n, ext_->subpart_subs_u, ufs, ufw, nullptr, ext_->task_done);
     }
 #undef SUBS_ROW
 #undef SUBS_ROWR
