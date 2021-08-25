@@ -262,7 +262,7 @@ ILUSolver::SetupMatrix() {
         ext_->subs_threads = std::min(threads_, param::subs_max_threads);
     }
     ext_->packed = threads_ > 1 && n >= param::granu_min_n;
-    puts(ext_->transpose_fact ? "up-looking" : "right-looking");
+    puts(ext_->transpose_fact ? "up-looking" : "left-looking");
     printf(ext_->paralleled_subs ? "par-subs %d\n" : "seq-subs\n", ext_->subs_threads);
     puts(ext_->packed ? "packed tasks" : "single task");
 
