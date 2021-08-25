@@ -193,7 +193,8 @@ static void schedule_subtree(int n, int nproc, int nsubtree, const int *subtrees
     }
     for (int i = nsubtree - 1; i >= 0; --i)
     {
-        int mi, t = subtrees[i], m = std::numeric_limits<weight_t>::max();
+        int mi, t = subtrees[i];
+        weight_t m = std::numeric_limits<weight_t>::max();
         for (int ii = 0; ii < nproc; ++ii) // 如果线程数较多可以改用heap
         {
             if (m > weight_per_proc[ii])
@@ -226,24 +227,24 @@ static void build_partitions(int n, int nproc, int nsubtree, const int *subtrees
     {
         part_ptr_atomic[i].store(part_ptr[i], std::memory_order_relaxed);
     }
-#pragma omp parallel num_threads(nproc)
+#pragma omp parallel
     {
 #pragma omp single
         for (int k = part_ptr[nproc], current = n; k < n;) // dfs
         {
             int first, next;
 
-            auto next_unassigned = [](int current_, const int *next_, const int *assign_) {
-                while ((current_ != etree_empty) && (assign_[current_] != etree_empty))
+            auto next_unassigned = [next_sibling, assign](int current_) {
+                while ((current_ != etree_empty) && (assign[current_] != etree_empty))
                 {
-                    current_ = next_[current_];
+                    current_ = next_sibling[current_];
                 }
                 return current_;
             };
 
             /* find the first leaf */
-            for (first = next_unassigned(first_child[current], next_sibling, assign); first != etree_empty;
-                 first = next_unassigned(first_child[current], next_sibling, assign))
+            for (first = next_unassigned(first_child[current]); first != etree_empty;
+                 first = next_unassigned(first_child[current]))
             {
                 current = first;
             }
@@ -252,8 +253,8 @@ static void build_partitions(int n, int nproc, int nsubtree, const int *subtrees
             partitions[k++] = current;
 
             /* look for the next */
-            for (next = next_unassigned(next_sibling[current], next_sibling, assign); (next == etree_empty) && (k < n);
-                 next = next_unassigned(next_sibling[current], next_sibling, assign))
+            for (next = next_unassigned(next_sibling[current]); (next == etree_empty) && (k < n);
+                 next = next_unassigned(next_sibling[current]))
             {
                 /* no more kids : back to the parent node */
                 current = parent[current];

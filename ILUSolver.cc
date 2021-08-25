@@ -137,7 +137,7 @@ struct SubtreePartition {
     int ntasks;
 
     void create(int nthread, int n) {
-        part_ptr = new int[nthread];
+        part_ptr = new int[nthread + 1];
         partitions = new int[n];
     }
     void destroy() {
