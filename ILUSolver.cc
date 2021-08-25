@@ -278,13 +278,7 @@ ILUSolver::SetupMatrix() {
         ext_->subs_threads = std::min(threads_, param::subs_max_threads);
     }
     ext_->packed = threads_ > 1 && n >= param::granu_min_n;
-<<<<<<< HEAD
     PRINT_ALGORITHM(ext_);
-=======
-    puts(ext_->transpose_fact ? "up-looking" : "left-looking");
-    printf(ext_->paralleled_subs ? "par-subs %d\n" : "seq-subs\n", ext_->subs_threads);
-    puts(ext_->packed ? "packed tasks" : "single task");
->>>>>>> b9053cd1abf170a188a1773b9bf075c3ea7e79e1
 
     FixedLoadBalancer lb_fact{param::fact_fixed_subtree_weight, param::fact_fixed_queue_weight, 1};
     FixedLoadBalancer lb_subs{param::subs_fixed_subtree_weight, param::subs_fixed_queue_weight, 1};
@@ -356,27 +350,29 @@ static void subpart_parallel_run(int threads, int n, const SubtreePartition& sub
         task_head.store(0, std::memory_order_relaxed);
         task_tail = subpart.ntasks;
     }
-#pragma omp parallel for schedule(static, 16) num_threads(threads)
+#pragma omp parallel for schedule(static, 16)
         for (int j = 0; j < n; ++j) {
             task_done[j].store(false, std::memory_order_relaxed);
         }
-#pragma omp parallel num_threads(threads)
+#pragma omp parallel
     {
         int tid = omp_get_thread_num();
-        /* independent part */
-        for(int k = subpart.part_ptr[tid]; k < subpart.part_ptr[tid + 1]; ++k) {
-            fs(subpart.partitions[k], tid);
-        }
-        /* queue part */
-        while (true) {
-            // get task
-            int task_id = task_head.fetch_add(1, std::memory_order_relaxed);
-            if (task_id >= task_tail) {
-                break;
+        if(tid < threads) {
+            /* independent part */
+            for(int k = subpart.part_ptr[tid]; k < subpart.part_ptr[tid + 1]; ++k) {
+                fs(subpart.partitions[k], tid);
             }
+            /* queue part */
+            while (true) {
+                // get task
+                int task_id = task_head.fetch_add(1, std::memory_order_relaxed);
+                if (task_id >= task_tail) {
+                    break;
+                }
 
-            // execute task
-            subpart_parallel_run_queue_exec(task_id, subpart, fw, fi, tid);
+                // execute task
+                subpart_parallel_run_queue_exec(task_id, subpart, fw, fi, tid);
+            }
         }
     }
 }
