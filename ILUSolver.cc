@@ -278,7 +278,13 @@ ILUSolver::SetupMatrix() {
         ext_->subs_threads = std::min(threads_, param::subs_max_threads);
     }
     ext_->packed = threads_ > 1 && n >= param::granu_min_n;
+<<<<<<< HEAD
     PRINT_ALGORITHM(ext_);
+=======
+    puts(ext_->transpose_fact ? "up-looking" : "left-looking");
+    printf(ext_->paralleled_subs ? "par-subs %d\n" : "seq-subs\n", ext_->subs_threads);
+    puts(ext_->packed ? "packed tasks" : "single task");
+>>>>>>> b9053cd1abf170a188a1773b9bf075c3ea7e79e1
 
     FixedLoadBalancer lb_fact{param::fact_fixed_subtree_weight, param::fact_fixed_queue_weight, 1};
     FixedLoadBalancer lb_subs{param::subs_fixed_subtree_weight, param::subs_fixed_queue_weight, 1};
