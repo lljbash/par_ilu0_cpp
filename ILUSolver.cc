@@ -196,6 +196,22 @@ static int64_t estimate_cost(int n, const long* vbegin, const long* vend, const 
     return est;
 }
 
+template<typename EXT>
+inline void print_algorithm(const EXT* ext_) {
+    puts(ext_->transpose_fact ? "up-looking" : "left-looking");
+    printf(ext_->paralleled_subs ? "par-subs %d\n" : "seq-subs\n", ext_->subs_threads);
+    puts(ext_->packed ? "packed tasks" : "single task");
+}
+
+#ifdef SHOW_ALGORITHM
+#define PRINT_LU_EST(rl_est, ul_est) printf("U: %ld\nL: %ld\n", rl_est, ul_est);
+//std::cout << "U: " << rl_est << std::endl << "L: " << ul_est << std::endl;
+#define PRINT_ALGORITHM(e) print_algorithm(e)
+#else
+#define PRINT_LU_EST(r, u)
+#define PRINT_ALGORITHM(e)
+#endif
+
 void             
 ILUSolver::SetupMatrix() {
     // HERE, you could setup the reasonable stuctures of L and U as you want
@@ -255,16 +271,14 @@ ILUSolver::SetupMatrix() {
         csc2csr();
         auto rl_est = estimate_cost(n, col_ptr, ext_->csc_diag_ptr, row_idx);
         auto ul_est = estimate_cost(n, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx);
-        printf("U: %ld\nL: %ld\n", rl_est, ul_est);
+        PRINT_LU_EST(rl_est, ul_est);
         ext_->transpose_fact = rl_est > ul_est;
         //ext_->transpose_fact = false;
         ext_->paralleled_subs = true;
         ext_->subs_threads = std::min(threads_, param::subs_max_threads);
     }
     ext_->packed = threads_ > 1 && n >= param::granu_min_n;
-    puts(ext_->transpose_fact ? "up-looking" : "right-looking");
-    printf(ext_->paralleled_subs ? "par-subs %d\n" : "seq-subs\n", ext_->subs_threads);
-    puts(ext_->packed ? "packed tasks" : "single task");
+    PRINT_ALGORITHM(ext_);
 
     FixedLoadBalancer lb_fact{param::fact_fixed_subtree_weight, param::fact_fixed_queue_weight, 1};
     FixedLoadBalancer lb_subs{param::subs_fixed_subtree_weight, param::subs_fixed_queue_weight, 1};
