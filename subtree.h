@@ -452,24 +452,6 @@ static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end
                      parent, first_child.get(), next_sibling.get(), part_ptr, partitions, assign.get());
 }
 
-class NaiveLoadBalancer
-{
-public:
-    using weight_t = int;
-    weight_t weight_in_subtree(int vertex) const
-    {
-        return 1;
-    }
-    weight_t weight_in_queue(int vertex) const
-    {
-        return 1;
-    }
-    constexpr int queue_granularity() const
-    {
-        return 4;
-    }
-};
-
 /*
     n     - matrix dimension
     nproc - number of processors

@@ -95,17 +95,35 @@ constexpr int subs_max_threads = 8;
 
 }
 
-class FixedLoadBalancer {
-public:
-    using weight_t = double;
-    weight_t weight_in_subtree(int) const { return weight_in_subtree_; }
-    weight_t weight_in_queue(int) const { return weight_in_queue_; }
-    int queue_granularity() const { return queue_granularity_; }
 
-    weight_t weight_in_subtree_;
-    weight_t weight_in_queue_;
+class NaiveLoadBalancer {
+public:
+    using weight_t = int;
+    weight_t weight_in_subtree(int) const { return 1; }
+    weight_t weight_in_queue(int) const { return 1; }
+    int queue_granularity() const { return queue_granularity_; }
+    template<typename ... Args>
+    NaiveLoadBalancer(int granu, Args ... ignored) : queue_granularity_(granu) {}
+
     int queue_granularity_;
 };
+
+class NNZLoadBalancer {
+public:
+    using weight_t = long;
+    weight_t weight_in_subtree(int i) const { return end_[i] - begin_[i] + base_; }
+    weight_t weight_in_queue(int i) const { return end_[i] - begin_[i] + base_; }
+    int queue_granularity() const { return queue_granularity_; }
+    NNZLoadBalancer(int granu, const weight_t *begin, const weight_t *end, weight_t base) 
+    : queue_granularity_(granu), begin_(begin), end_(end), base_(base) {}
+
+    const weight_t *begin_;
+    const weight_t *end_;
+    weight_t base_;
+    int queue_granularity_;
+};
+
+using LoadBalancer = NNZLoadBalancer;
 
 struct CSRMatrix {
     long* row_ptr = nullptr;
@@ -280,26 +298,29 @@ ILUSolver::SetupMatrix() {
     ext_->packed = threads_ > 1 && n >= param::granu_min_n;
     PRINT_ALGORITHM(ext_);
 
-    FixedLoadBalancer lb_fact{param::fact_fixed_subtree_weight, param::fact_fixed_queue_weight, 1};
-    FixedLoadBalancer lb_subs{param::subs_fixed_subtree_weight, param::subs_fixed_queue_weight, 1};
+    int fact_granularity = 1, subs_granularity = 1;
     if (ext_->packed) {
-        lb_fact.queue_granularity_ = param::fact_granu;
-        lb_subs.queue_granularity_ = param::subs_granu;
+        fact_granularity = param::fact_granu;
+        subs_granularity = param::subs_granu;
     }
 
-    auto get_subpart = [n](int p1, int p2, int p3, int p4, ConstBiasArray<long> p5, const long* p6, const int* p7, SubtreePartition& out, const FixedLoadBalancer& lb) {
+    auto get_subpart = [n](int p1, int p2, int p3, int p4, ConstBiasArray<long> p5, const long* p6, const int* p7, SubtreePartition& out, const LoadBalancer& lb) {
         out.create(p1, n);
         out.ntasks = tree_schedule(p1, p2, p3, p4, p5, p6, p7, out.part_ptr, out.partitions, out.task_queue, lb);
     };
     if (!ext_->transpose_fact) {
+        LoadBalancer lb_fact {fact_granularity, col_ptr, ext_->csc_diag_ptr, 1};
         get_subpart(threads_, 0, n, 1, col_ptr, ext_->csc_diag_ptr, row_idx, ext_->subpart_fact, lb_fact);
     }
     else {
+        LoadBalancer lb_fact {fact_granularity, ext_->csr.row_ptr, ext_->csr.diag_ptr, 1};
         get_subpart(threads_, 0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->subpart_fact, lb_fact);
     }
     if (ext_->paralleled_subs) {
-        get_subpart(ext_->subs_threads, 0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->subpart_subs_l, lb_subs);
-        get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr.diag_ptr, 1}, ext_->csr.row_ptr + 1, ext_->csr.col_idx, ext_->subpart_subs_u, lb_subs);
+        LoadBalancer lb_subs1 {subs_granularity, ext_->csr.row_ptr,  ext_->csr.diag_ptr,    1};
+        LoadBalancer lb_subs2 {subs_granularity, ext_->csr.diag_ptr, ext_->csr.row_ptr + 1, 0};
+        get_subpart(ext_->subs_threads, 0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->subpart_subs_l, lb_subs1);
+        get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr.diag_ptr, 1}, ext_->csr.row_ptr + 1, ext_->csr.col_idx, ext_->subpart_subs_u, lb_subs2);
     }
 
     destroy_array(extt_);
@@ -307,8 +328,8 @@ ILUSolver::SetupMatrix() {
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
-        extt_[tid].col_modification = new double[n * lb_fact.queue_granularity()];
-        extt_[tid].interupt = new long[std::max(lb_fact.queue_granularity(), lb_subs.queue_granularity())];
+        extt_[tid].col_modification = new double[n * fact_granularity];
+        extt_[tid].interupt = new long[std::max(fact_granularity, subs_granularity)];
     }
 
     if (!ext_->transpose_fact) {
