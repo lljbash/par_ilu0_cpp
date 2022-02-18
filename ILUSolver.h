@@ -19,6 +19,7 @@ public:
     ~ILUSolver();
     const double*    GetSolution()  const { return x_; }
     const CCSMatrix& GetILUMatrix() const { return iluMatrix_; }
+    CCSMatrix* GetMatrix() { return &aMatrix_; }
     int GetDimension() const { return dimension_; }
 
     void SetThreads(int thread) { threads_ = thread; }

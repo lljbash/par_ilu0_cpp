@@ -246,15 +246,28 @@ ILUSolver::SetupMatrix() {
     ext_->task_done = new std::atomic_bool[n];
 
     // get diag_ptr
+#ifdef CHECK_DIAG
+    bool missing_diag = false;
+#endif
 #pragma omp parallel for
     for (int j = 0; j < n; ++j) {
         for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
             if (row_idx[ji] >= j) {
+#ifdef CHECK_DIAG
+                if (row_idx[ji] != j) {
+                    missing_diag = true;
+                }
+#endif
                 ext_->csc_diag_ptr[j] = ji;
                 break;
             }
         }
     }
+#ifdef CHECK_DIAG
+    if (missing_diag) {
+        throw std::runtime_error("missing diag");
+    }
+#endif
 
     // CSC -> CSR
     auto csc2csr = [&]() {
