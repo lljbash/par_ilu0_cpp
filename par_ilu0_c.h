@@ -19,6 +19,9 @@ void par_ilu0_import_matrix(ParILU0SolverHandler hdl, csptr csmat);
 int par_ilu0_factorize(ParILU0SolverHandler hdl, bool different_structure);
 void par_ilu0_export_matrix(ParILU0SolverHandler hdl, iluptr lu);
 
+void par_ilu0_stopwatch_reset();
+double par_ilu0_stopwatch_elapsed();
+
 #ifdef __cplusplus
 }
 #endif

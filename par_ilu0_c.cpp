@@ -132,3 +132,15 @@ void par_ilu0_export_matrix(ParILU0SolverHandler hdl, iluptr lu) {
         }
     }
 }
+
+#include "stopwatch.h"
+
+static Stopwatch stopwatch;
+
+void par_ilu0_stopwatch_reset() {
+    stopwatch.reset();
+}
+
+double par_ilu0_stopwatch_elapsed() {
+    return stopwatch.elapsed().count();
+}

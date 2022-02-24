@@ -1,6 +1,6 @@
 pp = g++
-#cf = -std=c++11 -O3 -DNDEBUG -fPIC -fopenmp -fexceptions -march=native -ffast-math -funroll-loops
-cf ?= -std=c++11 -g -fPIC -fopenmp #-fsanitize=address -fno-omit-frame-pointer
+cf = -std=c++11 -O3 -DNDEBUG -fPIC -fopenmp -fexceptions -march=native -ffast-math -funroll-loops
+#cf ?= -std=c++11 -g -fPIC -fopenmp #-fsanitize=address -fno-omit-frame-pointer
 cf += -D_GLIBCXX_USE_CXX11_ABI=0
 sh = -shared
 lf = -lrt -ldl -lnuma -lpthread
