@@ -135,12 +135,17 @@ void par_ilu0_export_matrix(ParILU0SolverHandler hdl, iluptr lu) {
 
 #include "stopwatch.h"
 
-static Stopwatch stopwatch;
-
-void par_ilu0_stopwatch_reset() {
-    stopwatch.reset();
+ParILU0StopwatchHandler par_ilu0_stopwatch_create() {
+    return reinterpret_cast<ParILU0StopwatchHandler>(new Stopwatch);
 }
 
-double par_ilu0_stopwatch_elapsed() {
-    return stopwatch.elapsed().count();
+void par_ilu0_stopwatch_destroy(ParILU0StopwatchHandler hdl) {
+    delete reinterpret_cast<Stopwatch*>(hdl);
+}
+
+void par_ilu0_stopwatch_reset(ParILU0StopwatchHandler hdl) {
+    reinterpret_cast<Stopwatch*>(hdl)->reset();
+}
+double par_ilu0_stopwatch_elapsed(ParILU0StopwatchHandler hdl) {
+    return reinterpret_cast<Stopwatch*>(hdl)->elapsed().count();
 }

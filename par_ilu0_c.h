@@ -19,8 +19,12 @@ void par_ilu0_import_matrix(ParILU0SolverHandler hdl, csptr csmat);
 int par_ilu0_factorize(ParILU0SolverHandler hdl, bool different_structure);
 void par_ilu0_export_matrix(ParILU0SolverHandler hdl, iluptr lu);
 
-void par_ilu0_stopwatch_reset();
-double par_ilu0_stopwatch_elapsed();
+typedef void* ParILU0StopwatchHandler;
+
+ParILU0StopwatchHandler par_ilu0_stopwatch_create();
+void par_ilu0_stopwatch_destroy(ParILU0StopwatchHandler hdl);
+void par_ilu0_stopwatch_reset(ParILU0StopwatchHandler hdl);
+double par_ilu0_stopwatch_elapsed(ParILU0StopwatchHandler hdl);
 
 #ifdef __cplusplus
 }
