@@ -133,6 +133,14 @@ void par_ilu0_export_matrix(ParILU0SolverHandler hdl, iluptr lu) {
     }
 }
 
+int par_ilu0_solve(ParILU0SolverHandler hdl, double* y, double* x) {
+    ILUSolver& solver = *reinterpret_cast<ILUSolver*>(hdl);
+    solver.SetupSubstitution(y, x);
+    solver.Substitute();
+    solver.SetupSubstitution(nullptr, nullptr);
+    return 0;
+}
+
 #include "stopwatch.h"
 
 ParILU0StopwatchHandler par_ilu0_stopwatch_create() {

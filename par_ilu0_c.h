@@ -18,6 +18,7 @@ void par_ilu0_destroy_solver(ParILU0SolverHandler hdl);
 void par_ilu0_import_matrix(ParILU0SolverHandler hdl, csptr csmat);
 int par_ilu0_factorize(ParILU0SolverHandler hdl, bool different_structure);
 void par_ilu0_export_matrix(ParILU0SolverHandler hdl, iluptr lu);
+int par_ilu0_solve(ParILU0SolverHandler hdl, double* y, double* x);
 
 typedef void* ParILU0StopwatchHandler;
 

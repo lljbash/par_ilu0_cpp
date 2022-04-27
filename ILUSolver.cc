@@ -233,8 +233,8 @@ inline void print_algorithm(const EXT* ext_) {
 void             
 ILUSolver::SetupMatrix() {
     // HERE, you could setup the reasonable stuctures of L and U as you want
-    omp_set_dynamic(0);
-    omp_set_num_threads(threads_);
+    //omp_set_dynamic(0);
+    //omp_set_num_threads(threads_);
 
     int n = aMatrix_.GetSize();
     long* col_ptr = aMatrix_.GetColumnPointer();
@@ -618,7 +618,9 @@ ILUSolver::Substitute() {
     // HERE, use the L and U calculated by ILUSolver::Factorize to solve the triangle systems 
     // to calculate the x
     int n = aMatrix_.GetSize();
-    x_ = new double[n];
+    if (!x_) {
+        x_ = new double[n];
+    }
     std::memcpy(x_, b_, sizeof(double[n]));
     if (!ext_->paralleled_subs) {
         long* col_ptr = iluMatrix_.GetColumnPointer();

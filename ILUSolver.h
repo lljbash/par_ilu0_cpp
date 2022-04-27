@@ -21,6 +21,7 @@ public:
     const CCSMatrix& GetILUMatrix() const { return iluMatrix_; }
     CCSMatrix* GetMatrix() { return &aMatrix_; }
     int GetDimension() const { return dimension_; }
+    void SetupSubstitution(double* b, double* x) { b_ = b; x_ = x; }
 
     void SetThreads(int thread) { threads_ = thread; }
     bool GenerateRhs(double v, bool random = false); 
