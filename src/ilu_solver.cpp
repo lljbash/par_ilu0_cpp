@@ -1,4 +1,4 @@
-#include "ILUSolver.h"
+#include "ilu_solver.hpp"
 #include <type_traits>
 #include <iostream>
 #include <fstream>
@@ -6,64 +6,10 @@
 #include <algorithm>
 #include <atomic>
 #include <omp.h>
-#include "scope_guard.h"
-#include "subtree.h"
+#include "scope_guard.hpp"
+#include "subtree.hpp"
 
-bool             
-ILUSolver::ReadRhs(const std::string& fname, bool sparse) {
-    if (b_) { delete [] b_; }
-    b_ = new double[dimension_];
-    memset(b_, 0, sizeof(double) * dimension_);
-
-    std::ifstream ifile(fname);
-    if (!ifile.is_open()) {
-        std::cout << "Vector file " << fname << " not exist " << std::endl;
-        return false;
-    }
-
-    if (!sparse) {
-        for (int i = 0; i < dimension_; ++i)
-            ifile >> b_[i];
-        return true;
-    }
-
-    int size = 0;
-    long int nnz = 0;
-    ifile >> size >> nnz;
-    if (size != dimension_) {
-        std::cout << "Wrong right-hand-side size!" << std::endl;
-        return false;
-    }
-    int row = 0; double v = 0;
-    for (int i = 0; i < nnz; ++i) {
-        ifile >> row >> v;
-        b_[row - 1] = v;
-    }
-    return true;
-}
-
-bool
-ILUSolver::GenerateRhs(double v, bool random) {
-    if (b_) { delete [] b_; }
-    b_ = new double[dimension_];
-    if (!random) {
-        for (int i = 0; i < dimension_; ++i) {
-            b_[i] = v; 
-        }
-        return true;
-    }
-    
-    // as rhs will be given by file, do not implement random generator here
-    // you can add your own here
-    return true; 
-}
-
-bool
-ILUSolver::ReadAMatrix(const std::string& fname) {
-    aMatrix_.LoadFromFile(fname);
-    dimension_ = aMatrix_.GetSize();
-    return true;
-}
+namespace lljbash {
 
 template <class T>
 static void destroy_object(T* ptr) {
@@ -103,7 +49,7 @@ public:
     weight_t weight_in_queue(int) const { return 1; }
     int queue_granularity() const { return queue_granularity_; }
     template<typename ... Args>
-    NaiveLoadBalancer(int granu, Args ... ignored) : queue_granularity_(granu) {}
+    NaiveLoadBalancer(int granu, Args ... /*ignored*/) : queue_granularity_(granu) {}
 
     int queue_granularity_;
 };
@@ -114,13 +60,13 @@ public:
     weight_t weight_in_subtree(int i) const { return end_[i] - begin_[i] + base_; }
     weight_t weight_in_queue(int i) const { return end_[i] - begin_[i] + base_; }
     int queue_granularity() const { return queue_granularity_; }
-    NNZLoadBalancer(int granu, const weight_t *begin, const weight_t *end, weight_t base) 
+    NNZLoadBalancer(int granu, const weight_t *begin, const weight_t *end, weight_t base)
     : queue_granularity_(granu), begin_(begin), end_(end), base_(base) {}
 
+    int queue_granularity_;
     const weight_t *begin_;
     const weight_t *end_;
     weight_t base_;
-    int queue_granularity_;
 };
 
 using LoadBalancer = NNZLoadBalancer;
@@ -165,7 +111,7 @@ struct SubtreePartition {
     }
 };
 
-struct ILUSolver::Ext {
+struct IluSolver::Ext {
     long* csc_diag_ptr = nullptr;
     std::atomic_bool* task_done = nullptr;
     bool transpose_fact;
@@ -189,7 +135,7 @@ struct ILUSolver::Ext {
     }
 };
 
-struct ILUSolver::ThreadLocalExt {
+struct IluSolver::ThreadLocalExt {
     double* col_modification = nullptr;
     long* interupt = nullptr;
 
@@ -199,14 +145,16 @@ struct ILUSolver::ThreadLocalExt {
     }
 };
 
-ILUSolver::~ILUSolver() {
-    destroy_array(x_);
-    destroy_array(b_);
-    destroy_object(ext_);
+IluSolver::~IluSolver() {
     destroy_array(extt_);
+    destroy_object(ext_);
+    DestroyCscMatrix(&iluMatrix_);
+    DestroyCscMatrix(&aMatrix_);
+    destroy_array(b_);
+    destroy_array(x_);
 }
 
-static int64_t estimate_cost(int n, const long* vbegin, const long* vend, const int* vtx) {
+static int64_t estimate_cost(int n, const long* vbegin, const long* vend, const int* /*vtx*/) {
     int64_t est = 0;
     for (int i = 0; i < n; ++i) {
         est += vend[i] - vbegin[i];
@@ -230,16 +178,16 @@ inline void print_algorithm(const EXT* ext_) {
 #define PRINT_ALGORITHM(e)
 #endif
 
-void             
-ILUSolver::SetupMatrix() {
+void
+IluSolver::SetupMatrix() {
     // HERE, you could setup the reasonable stuctures of L and U as you want
-    //omp_set_dynamic(0);
-    //omp_set_num_threads(threads_);
+    omp_set_dynamic(0);
+    omp_set_num_threads(threads_);
 
-    int n = aMatrix_.GetSize();
-    long* col_ptr = aMatrix_.GetColumnPointer();
-    int* row_idx = aMatrix_.GetRowIndex();
-    long nnz = aMatrix_.GetNonZeros();
+    int n = aMatrix_.size;
+    long* col_ptr = aMatrix_.col_ptr;
+    int* row_idx = aMatrix_.row_idx;
+    long nnz = GetCscNonzeros(&aMatrix_);
     destroy_object(ext_);
     ext_ = new Ext;
     ext_->csc_diag_ptr = new long[n];
@@ -346,7 +294,7 @@ ILUSolver::SetupMatrix() {
     }
 
     if (!ext_->transpose_fact) {
-        iluMatrix_ = aMatrix_;
+        CopyCscMatrix(&iluMatrix_, &aMatrix_);
     }
 }
 
@@ -432,7 +380,7 @@ struct ScaleL {
     }
 };
 struct ScaleU {
-    static double scale(double a, double diag) {
+    static double scale(double a, double /*diag*/) {
         return a;
     }
 };
@@ -514,22 +462,22 @@ static void fact_parallel_run(int threads, int n, const long* col_ptr, const lon
     }
 }
 
-bool             
-ILUSolver::Factorize() {
-    // HERE, do triangle decomposition 
+bool
+IluSolver::Factorize() {
+    // HERE, do triangle decomposition
     // to calculate the values in L and U
-    int n = aMatrix_.GetSize();
-    long nnz = aMatrix_.GetNonZeros();
-    double* orig = aMatrix_.GetValue();
+    int n = aMatrix_.size;
+    long nnz = GetCscNonzeros(&aMatrix_);
+    double* orig = aMatrix_.value;
     const long* col_ptr;
     const long* diag_ptr;
     const int* row_idx;
     double* a;
     if (!ext_->transpose_fact) {
-        col_ptr = iluMatrix_.GetColumnPointer();
+        col_ptr = iluMatrix_.col_ptr;
         diag_ptr = ext_->csc_diag_ptr;
-        row_idx = iluMatrix_.GetRowIndex();
-        a = iluMatrix_.GetValue();
+        row_idx = iluMatrix_.row_idx;
+        a = iluMatrix_.value;
 #pragma omp parallel for schedule(static, 2048)
         for (int ii = 0; ii < nnz; ++ii) {
             a[ii] = orig[ii];
@@ -614,18 +562,18 @@ long substitute_row_U(int i, const long* row_ptr, const long* diag_ptr, const in
 }
 
 void
-ILUSolver::Substitute() {
-    // HERE, use the L and U calculated by ILUSolver::Factorize to solve the triangle systems 
+IluSolver::Substitute() {
+    // HERE, use the L and U calculated by ILUSolver::Factorize to solve the triangle systems
     // to calculate the x
-    int n = aMatrix_.GetSize();
+    int n = aMatrix_.size;
     if (!x_) {
         x_ = new double[n];
     }
     std::memcpy(x_, b_, sizeof(double[n]));
     if (!ext_->paralleled_subs) {
-        long* col_ptr = iluMatrix_.GetColumnPointer();
-        int* row_idx = iluMatrix_.GetRowIndex();
-        double* a = iluMatrix_.GetValue();
+        long* col_ptr = iluMatrix_.col_ptr;
+        int* row_idx = iluMatrix_.row_idx;
+        double* a = iluMatrix_.value;
         for (int j = 0; j < n; ++j) {
             for (long ji = ext_->csc_diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
                 int i = row_idx[ji];
@@ -666,17 +614,17 @@ ILUSolver::Substitute() {
 #undef SUBS_ROWR
 }
 
-void    
-ILUSolver::CollectLUMatrix() {
-    // put L and U together into iluMatrix_ 
-    // as the diag of L is 1, set the diag of iluMatrix_ with u 
+void
+IluSolver::CollectLUMatrix() {
+    // put L and U together into iluMatrix_
+    // as the diag of L is 1, set the diag of iluMatrix_ with u
     // iluMatrix_ should have the same size and patterns with aMatrix_
     if (ext_->transpose_fact) {
-        iluMatrix_ = aMatrix_;
-        int n = iluMatrix_.GetSize();
-        long* col_ptr = iluMatrix_.GetColumnPointer();
-        int* row_idx = iluMatrix_.GetRowIndex();
-        double* a = iluMatrix_.GetValue();
+        CopyCscMatrix(&iluMatrix_, &aMatrix_);
+        int n = iluMatrix_.size;
+        long* col_ptr = iluMatrix_.col_ptr;
+        int* row_idx = iluMatrix_.row_idx;
+        double* a = iluMatrix_.value;
         int *nnz_cnt = new int[n](); // initialized to zero
         ON_SCOPE_EXIT { delete[] nnz_cnt; };
         for (int j = 0; j < n; ++j) {
@@ -689,5 +637,6 @@ ILUSolver::CollectLUMatrix() {
             }
         }
     }
-}    
+}
 
+} // namespace lljbash

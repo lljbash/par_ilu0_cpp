@@ -1,0 +1,5 @@
+file(GLOB SRCS "*.cpp")
+add_library(par-ilu0-gmres_c SHARED ${SRCS})
+target_compile_options(par-ilu0-gmres_c PUBLIC -Wall -Wextra -Wconversion -Wno-sign-conversion)
+target_link_libraries(par-ilu0-gmres_c PUBLIC par-ilu0-gmres)
+target_include_directories(par-ilu0-gmres_c PUBLIC ${CMAKE_SOURCE_DIR}/include_c)

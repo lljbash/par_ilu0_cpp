@@ -1,5 +1,5 @@
 clang
-%cpp -std=c++11
+%cpp -std=c++17
 %h -x
 %h c++-header
 -Wall
@@ -15,3 +15,4 @@ clang
 -DEDITOR
 -I/usr/local/include
 -I./include
+-I./include_c

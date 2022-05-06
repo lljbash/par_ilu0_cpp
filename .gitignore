@@ -1,6 +1,6 @@
-case
-ilusolver
-.vscode
+bin
+lib
+build
 
 ### C++ ###
 # Prerequisites

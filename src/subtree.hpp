@@ -1,10 +1,11 @@
-#ifndef SUBTREE_H
-#define SUBTREE_H
+#pragma once
 
 #include <limits>
 #include <memory>
 #include <algorithm>
 #include <atomic>
+
+namespace lljbash {
 
 template <class T>
 class ConstBiasArray
@@ -514,4 +515,4 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
     return nsuper;
 }
 
-#endif
+} // namespace lljbash
