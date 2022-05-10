@@ -2,7 +2,6 @@
 #include <type_traits>
 #include <iostream>
 #include <fstream>
-#include <cstring>
 #include <algorithm>
 #include <atomic>
 #include <omp.h>
@@ -569,7 +568,7 @@ IluSolver::Substitute() {
     if (!x_) {
         x_ = new double[n];
     }
-    std::memcpy(x_, b_, sizeof(double[n]));
+    std::copy_n(b_, n, x_);
     if (!ext_->paralleled_subs) {
         long* col_ptr = iluMatrix_.col_ptr;
         int* row_idx = iluMatrix_.row_idx;

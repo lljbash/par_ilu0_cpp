@@ -140,7 +140,7 @@ static int divide_subtree(int n, int nproc, const int *first_child, const int *n
         std::swap(subtrees[ngen - 1], subtrees[max_weight_pos]);
         sort_by_rank_ascend(subtrees, subtrees + ngen - 1, subtree_weight);
     }
-    nsubtree = std::copy(subtrees + ichain, subtrees + n, subtrees + ngen) - subtrees; // chain 部分已经有序
+    nsubtree = static_cast<int>(std::copy(subtrees + ichain, subtrees + n, subtrees + ngen) - subtrees); // chain 部分已经有序
 
     if (nproc >= 2)
     {
@@ -307,7 +307,7 @@ static void build_partitions(int n, int nproc, int nsubtree, const int *subtrees
 static int aggregate_nodes(int n, int *etree /* destroyed */, const int *post_order, int part_begin,
                            int *sup2col, int *col2sup, int granularity)
 {
-    const int part_size = n - part_begin;
+    //const int part_size = n - part_begin;
     int nsuper;
     int *post_order_inverse = sup2col;
     int *etree_temp = col2sup;
@@ -408,7 +408,7 @@ static void build_queue(int n, int nsuper, const int *sup2col, const int *sup_pe
     for (int i = 0; i < nsuper; ++i)
     {
         int isup = sup_perm[i];
-        task_queue[i] = t - temp;
+        task_queue[i] = static_cast<int>(t - temp);
         t = std::copy(partitions + sup2col[isup], partitions + sup2col[isup + 1], t);
     }
     task_queue[nsuper] = n;

@@ -1,6 +1,4 @@
 #include "csc_matrix.h"
-#include <cstdio>
-#include <cstring>
 #include <algorithm>
 #include <tuple>
 #include <vector>
@@ -31,9 +29,9 @@ void SetupCscMatrix(CscMatrix* mat, int size, long max_nnz) {
 
 void CopyCscMatrix(CscMatrix* dst, const CscMatrix* src) {
     SetupCscMatrix(dst, src->size, src->max_nnz);
-    std::memcpy(dst->col_ptr, src->col_ptr, src->size + 1);
-    std::memcpy(dst->row_idx, src->row_idx, src->size);
-    std::memcpy(dst->value, src->value, src->size);
+    std::copy_n(src->col_ptr, src->size + 1, dst->col_ptr);
+    std::copy_n(src->row_idx, src->max_nnz, dst->row_idx);
+    std::copy_n(src->value, src->max_nnz, dst->value);
 }
 
 void DestroyCscMatrix(CscMatrix* mat) {

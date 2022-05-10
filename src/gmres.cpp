@@ -1,7 +1,5 @@
 #include "gmres.hpp"
-#include <cstring>
 #include <cmath>
-#include <memory>
 #include <cblas.h>
 #include "csc_matvec.h"
 #include "scope_guard.hpp"
@@ -19,13 +17,13 @@ PreconditionedGmres::Solve(const CscMatrix *mat, const double *rhs, double* sol)
     int ptih = 0;
     double eps1 = 0;
     auto im1 = im + 1;
-    auto vv = (double*) std::calloc(im1 * n, sizeof(double));
-    auto z = (double*) std::calloc(im * n, sizeof(double));
-    auto hh = (double*) std::calloc(im1 * (im + 3), sizeof(double));
+    auto vv = new double[im1 * n]();
+    auto z = new double[im * n]();
+    auto hh = new double[im1 * (im + 3)]();
     ON_SCOPE_EXIT {
-        std::free(hh);
-        std::free(z);
-        std::free(vv);
+        delete [] hh;
+        delete [] z;
+        delete [] vv;
     };
     auto c = hh + im1 * im;
     auto s = c + im1;
@@ -65,7 +63,7 @@ PreconditionedGmres::Solve(const CscMatrix *mat, const double *rhs, double* sol)
                 precon_(vv + pti, z + pti);
             }
             else {
-                std::memcpy(z + pti, vv + pti, sizeof(double[n]));
+                std::copy_n(vv + pti, n, z + pti);
             }
 /*-------------------- matvec operation w = A z_{j} = A M^{-1} v_{j} */
             CscMatVec(mat, &z[pti], &vv[pti1]);
@@ -93,7 +91,7 @@ PreconditionedGmres::Solve(const CscMatrix *mat, const double *rhs, double* sol)
 | now update factorization of hh
 | perform previous transformations on i-th column of h
 +------------------------------------------------------*/
-            for (int k = 1; k < i; ++k) {
+            for (int k = 1; k <= i; ++k) {
                 auto k1 = k - 1;
                 t = hh[ptih+k1];
                 hh[ptih+k1] = c[k1] * t + s[k1] * hh[ptih+k];
