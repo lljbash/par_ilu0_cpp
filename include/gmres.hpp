@@ -14,9 +14,7 @@ public:
 
     void SetIluPreconditioner(IluSolver* ilu_solver) {
         precon_ = [ilu_solver](const double* rhs, double* sol) {
-            ilu_solver->SetupSubstitution(const_cast<double*>(rhs), sol);
-            ilu_solver->Substitute();
-            ilu_solver->SetupSubstitution(nullptr, nullptr);
+            ilu_solver->Substitute(rhs, sol);
         };
         precon_set_ = true;
     }

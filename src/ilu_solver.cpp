@@ -149,8 +149,6 @@ IluSolver::~IluSolver() {
     destroy_object(ext_);
     DestroyCscMatrix(&iluMatrix_);
     DestroyCscMatrix(&aMatrix_);
-    destroy_array(b_);
-    destroy_array(x_);
 }
 
 static int64_t estimate_cost(int n, const long* vbegin, const long* vend, const int* /*vtx*/) {
@@ -561,14 +559,13 @@ long substitute_row_U(int i, const long* row_ptr, const long* diag_ptr, const in
 }
 
 void
-IluSolver::Substitute() {
+IluSolver::Substitute(const double* b, double* x) {
     // HERE, use the L and U calculated by ILUSolver::Factorize to solve the triangle systems
     // to calculate the x
     int n = aMatrix_.size;
-    if (!x_) {
-        x_ = new double[n];
+    if (b != x) {
+        std::copy_n(b, n, x);
     }
-    std::copy_n(b_, n, x_);
     if (!ext_->paralleled_subs) {
         long* col_ptr = iluMatrix_.col_ptr;
         int* row_idx = iluMatrix_.row_idx;
@@ -576,36 +573,36 @@ IluSolver::Substitute() {
         for (int j = 0; j < n; ++j) {
             for (long ji = ext_->csc_diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
                 int i = row_idx[ji];
-                x_[i] -= x_[j] * a[ji];
+                x[i] -= x[j] * a[ji];
             }
         }
         for (int j = n - 1; j >= 0; --j) {
-            x_[j] /= a[ext_->csc_diag_ptr[j]];
+            x[j] /= a[ext_->csc_diag_ptr[j]];
             for (long ji = col_ptr[j]; ji < ext_->csc_diag_ptr[j]; ++ji) {
                 int i = row_idx[ji];
-                x_[i] -= x_[j] * a[ji];
+                x[i] -= x[j] * a[ji];
             }
         }
     }
     else if (ext_->packed) {
         int threads = ext_->subs_threads;
-#define SUBS_ROW(D, W) substitute_row_##D<W,false>(i, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->csr.a, x_, ext_->task_done)
-#define SUBS_ROWR(D, W, I) substitute_row_##D<W,true>(i, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->csr.a, x_, ext_->task_done, I)
-        auto lfs = [this](int i, int) { SUBS_ROW(L, Skip); };
-        auto lfw = [this](int i, int tid, int k) { SUBS_ROWR(L, Wait, extt_[tid].interupt[k]); };
-        auto lfi = [this](int i, int tid, int k) { extt_[tid].interupt[k] = SUBS_ROW(L, Interupt); };
-        auto ufs = [this](int i, int) { SUBS_ROW(U, Skip); };
-        auto ufw = [this](int i, int tid, int k) { SUBS_ROWR(U, Wait, extt_[tid].interupt[k]); };
-        auto ufi = [this](int i, int tid, int k) { extt_[tid].interupt[k] = SUBS_ROW(U, Interupt); };
+#define SUBS_ROW(D, W) substitute_row_##D<W,false>(i, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->csr.a, x, ext_->task_done)
+#define SUBS_ROWR(D, W, I) substitute_row_##D<W,true>(i, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->csr.a, x, ext_->task_done, I)
+        auto lfs = [&](int i, int) { SUBS_ROW(L, Skip); };
+        auto lfw = [&](int i, int tid, int k) { SUBS_ROWR(L, Wait, extt_[tid].interupt[k]); };
+        auto lfi = [&](int i, int tid, int k) { extt_[tid].interupt[k] = SUBS_ROW(L, Interupt); };
+        auto ufs = [&](int i, int) { SUBS_ROW(U, Skip); };
+        auto ufw = [&](int i, int tid, int k) { SUBS_ROWR(U, Wait, extt_[tid].interupt[k]); };
+        auto ufi = [&](int i, int tid, int k) { extt_[tid].interupt[k] = SUBS_ROW(U, Interupt); };
         subpart_parallel_run(threads, n, ext_->subpart_subs_l, lfs, lfw, lfi, ext_->task_done);
         subpart_parallel_run(threads, n, ext_->subpart_subs_u, ufs, ufw, ufi, ext_->task_done);
     }
     else {
         int threads = ext_->subs_threads;
-        auto lfs = [this](int i, int) { SUBS_ROW(L, Skip); };
-        auto lfw = [this](int i, int, int) { SUBS_ROW(L, Wait); };
-        auto ufs = [this](int i, int) { SUBS_ROW(U, Skip); };
-        auto ufw = [this](int i, int, int) { SUBS_ROW(U, Wait); };
+        auto lfs = [&](int i, int) { SUBS_ROW(L, Skip); };
+        auto lfw = [&](int i, int, int) { SUBS_ROW(L, Wait); };
+        auto ufs = [&](int i, int) { SUBS_ROW(U, Skip); };
+        auto ufw = [&](int i, int, int) { SUBS_ROW(U, Wait); };
         subpart_parallel_run(threads, n, ext_->subpart_subs_l, lfs, lfw, nullptr, ext_->task_done);
         subpart_parallel_run(threads, n, ext_->subpart_subs_u, ufs, ufw, nullptr, ext_->task_done);
     }
