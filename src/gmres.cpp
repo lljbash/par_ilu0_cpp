@@ -17,14 +17,12 @@ PreconditionedGmres::Solve(const CscMatrix *mat, const double *rhs, double* sol)
     int ptih = 0;
     double eps1 = 0;
     auto im1 = im + 1;
-    auto vv = new double[im1 * n]();
-    auto z = new double[im * n]();
-    auto hh = new double[im1 * (im + 3)]();
-    ON_SCOPE_EXIT {
-        delete [] hh;
-        delete [] z;
-        delete [] vv;
-    };
+    intermediate.vv.resize(im1 * n);
+    intermediate.z.resize(im * n);
+    intermediate.hh.resize(im1 * (im + 3));
+    auto vv = intermediate.vv.data();
+    auto z = intermediate.z.data();
+    auto hh = intermediate.hh.data();
     auto c = hh + im1 * im;
     auto s = c + im1;
     auto rs = s + im1;
@@ -82,7 +80,8 @@ PreconditionedGmres::Solve(const CscMatrix *mat, const double *rhs, double* sol)
             t = cblas_dnrm2(n, &vv[pti1], one);
             hh[ptih+i1] = t;
             if (t == 0.0) {
-                return {false, its};
+                //return {false, its};
+                break;
             }
             t = 1.0 / t;
 /*-------------------- v_{j+1} = w / h_{j+1,j} */

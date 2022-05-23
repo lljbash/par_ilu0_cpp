@@ -95,6 +95,9 @@ static int divide_subtree(int n, int nproc, const int *first_child, const int *n
     int max_weight_pos = 0;
     weight_t max_weight = subtree_weight[n];
     weight_t sum_weight = subtree_weight[n];
+    if (nproc == 1) {
+        return 0;
+    }
     subtrees[0] = n;
 
     while (ngen > 0 && max_weight * nproc > sum_weight)

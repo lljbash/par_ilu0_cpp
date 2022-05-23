@@ -28,7 +28,7 @@ static void destroy_array(T* arr) {
 
 namespace param {
 
-constexpr long transpose_min_nnz = 1000000;
+constexpr long transpose_min_nnz = 100000;
 constexpr int granu_min_n = 10000;
 constexpr double fact_fixed_subtree_weight = 1;
 constexpr double fact_fixed_queue_weight = 2;
@@ -119,6 +119,7 @@ struct IluSolver::Ext {
     int subs_threads = 1;
 
     CSRMatrix csr;
+    int* nnz_cnt;
 
     SubtreePartition subpart_fact;
     SubtreePartition subpart_subs_l;
@@ -128,6 +129,7 @@ struct IluSolver::Ext {
         destroy_array(csc_diag_ptr);
         destroy_array(task_done);
         csr.destroy();
+        destroy_array(nnz_cnt);
         subpart_fact.destroy();
         subpart_subs_l.destroy();
         subpart_subs_u.destroy();
@@ -178,8 +180,17 @@ inline void print_algorithm(const EXT* ext_) {
 void
 IluSolver::SetupMatrix() {
     // HERE, you could setup the reasonable stuctures of L and U as you want
-    omp_set_dynamic(0);
-    omp_set_num_threads(threads_);
+    if (threads_) {
+        omp_set_dynamic(0);
+        omp_set_num_threads(threads_);
+    }
+    else
+#pragma omp parallel
+#pragma omp single
+    {
+        threads_ = omp_get_num_threads();
+    }
+    printf("threads: %d\n", threads_);
 
     int n = aMatrix_.size;
     long* col_ptr = aMatrix_.col_ptr;
@@ -189,6 +200,7 @@ IluSolver::SetupMatrix() {
     ext_ = new Ext;
     ext_->csc_diag_ptr = new long[n];
     ext_->task_done = new std::atomic_bool[n];
+    ext_->nnz_cnt = new int[n];
 
     // get diag_ptr
 #ifdef CHECK_DIAG
@@ -223,7 +235,8 @@ IluSolver::SetupMatrix() {
         for (int i = 0; i < n; ++i) {
             ext_->csr.row_ptr[i+1] += ext_->csr.row_ptr[i];
         }
-        int* nnz_cnt = new int[n](); ON_SCOPE_EXIT { delete[] nnz_cnt; };
+        int* nnz_cnt = ext_->nnz_cnt;
+        std::fill_n(nnz_cnt, n, 0);
         for (int j = 0; j < n; ++j) {
 #pragma omp parallel for
             for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
@@ -621,8 +634,8 @@ IluSolver::CollectLUMatrix() {
         long* col_ptr = iluMatrix_.col_ptr;
         int* row_idx = iluMatrix_.row_idx;
         double* a = iluMatrix_.value;
-        int *nnz_cnt = new int[n](); // initialized to zero
-        ON_SCOPE_EXIT { delete[] nnz_cnt; };
+        int* nnz_cnt = ext_->nnz_cnt;
+        std::fill_n(nnz_cnt, n, 0);
         for (int j = 0; j < n; ++j) {
 #pragma omp parallel for
             for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {

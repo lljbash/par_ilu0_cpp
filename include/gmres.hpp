@@ -25,6 +25,11 @@ private:
     GmresParameters param_;
     bool precon_set_ = false;
     std::function<void(const double*, double*)> precon_;
+    struct {
+        std::vector<double> vv;
+        std::vector<double> z;
+        std::vector<double> hh;
+    } intermediate;
 };
 
 } // namespace lljbash

@@ -8,8 +8,8 @@ if (NOT CMAKE_BUILD_TYPE)
 endif()
 
 # uncomment to modify default settings
-set(CMAKE_CXX_FLAGS_DEBUG "-g -fsanitize=address -fno-omit-frame-pointer")
-set(CMAKE_C_FLAGS_DEBUG "-g -fsanitize=address -fno-omit-frame-pointer")
+#set(CMAKE_CXX_FLAGS_DEBUG "-g -fsanitize=address -fno-omit-frame-pointer")
+#set(CMAKE_C_FLAGS_DEBUG "-g -fsanitize=address -fno-omit-frame-pointer")
 #set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 #set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
 #set(CMAKE_CXX_FLAGS_MINSIZEREL "-Os -DNDEBUG")
@@ -24,6 +24,8 @@ if (CMAKE_BUILD_TYPE STREQUAL Release)
         message(STATUS "IPO / LTO not supported: <${error}>")
     endif()
 endif()
+
+option(SHOW_ALGORITHM "show algorithm" OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/lib)

@@ -10,7 +10,7 @@ int main(int argc, char* argv[]) {
         return -1;
     }
     int ret = 0;
-    IluSolverHdl ilu = IluSolverCreate(8);
+    IluSolverHdl ilu = IluSolverCreate(0);
     CscMatrix* mat = IluSolverGetMatrix(ilu);
     puts("Reading...");
     ReadCscMatrixMM1(mat, argv[1]);

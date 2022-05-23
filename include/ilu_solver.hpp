@@ -20,7 +20,7 @@ public:
     void Substitute(const double* b, double* x);
     void CollectLUMatrix();
 private:
-    int              threads_ = 1;
+    int              threads_ = 0;
     CscMatrix        aMatrix_;
     CscMatrix        iluMatrix_;
 
