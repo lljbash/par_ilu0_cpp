@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-#include "csc_matrix.h"
+#include "csr_matrix.h"
 
 namespace lljbash {
 
@@ -10,19 +10,17 @@ public:
     IluSolver() = default;
 
     ~IluSolver();
-    const CscMatrix& GetILUMatrix() const { return iluMatrix_; }
-    CscMatrix* GetMatrix() { return &aMatrix_; }
+    const CsrMatrix& GetILUMatrix() const { return aMatrix_; }
+    CsrMatrix* GetMatrix() { return &aMatrix_; }
 
     void SetThreads(int threads) { threads_ = threads; }
 
     void SetupMatrix();
     bool Factorize();
     void Substitute(const double* b, double* x);
-    void CollectLUMatrix();
 private:
     int              threads_ = 0;
-    CscMatrix        aMatrix_;
-    CscMatrix        iluMatrix_;
+    CsrMatrix        aMatrix_;
 
     //HERE, please add your L/U data stuctures
     struct Ext;

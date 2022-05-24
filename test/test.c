@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include "csc_matvec.h"
+#include "csr_matvec.h"
 #include "gmres_c.h"
 
 int main(int argc, char* argv[]) {
@@ -11,16 +11,18 @@ int main(int argc, char* argv[]) {
     }
     int ret = 0;
     IluSolverHdl ilu = IluSolverCreate(0);
-    CscMatrix* mat = IluSolverGetMatrix(ilu);
+    CsrMatrix a = CSR_MATRIX_DEFAULT;
+    ReadCsrMatrixMM1(&a, argv[1]);
+    CsrMatrix* ailu = IluSolverGetMatrix(ilu);
+    CopyCsrMatrix(ailu, &a);
     puts("Reading...");
-    ReadCscMatrixMM1(mat, argv[1]);
-    double* rhs = (double*) calloc(mat->size, sizeof(double));
-    double* sol = (double*) calloc(mat->size, sizeof(double));
-    double* x = (double*) calloc(mat->size, sizeof(double));
-    for (int i = 0; i < mat->size; ++i) {
+    double* rhs = (double*) calloc(a.size, sizeof(double));
+    double* sol = (double*) calloc(a.size, sizeof(double));
+    double* x = (double*) calloc(a.size, sizeof(double));
+    for (int i = 0; i < a.size; ++i) {
         sol[i] = 1.0;
     }
-    CscMatVec(mat, sol, rhs);
+    CsrMatVec(&a, sol, rhs);
     puts("Factorizing...");
     IluSolverFactorize(ilu, true);
     GmresHdl gmres = GmresCreate();
@@ -28,7 +30,7 @@ int main(int argc, char* argv[]) {
     GmresSetPreconditioner(gmres, ilu);
     puts("Solving...");
     int iter = 0;
-    bool succ = GmresSolve(gmres, mat, rhs, x, &iter);
+    bool succ = GmresSolve(gmres, &a, rhs, x, &iter);
     if (!succ) {
         if (iter < param->max_iterations) {
             puts("gmres failed");
@@ -42,7 +44,7 @@ int main(int argc, char* argv[]) {
     }
     printf("iter: %d\n", iter);
     double max_err = 0;
-    for (int i = 0; i < mat->size; ++i) {
+    for (int i = 0; i < a.size; ++i) {
         double err = fabs(x[i] - sol[i]);
         if (err > max_err) {
             max_err = err;

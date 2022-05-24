@@ -13,7 +13,7 @@ void IluSolverDestroy(IluSolverHdl hdl) {
     delete reinterpret_cast<IluSolver*>(hdl);
 }
 
-CscMatrix* IluSolverGetMatrix(IluSolverHdl hdl) {
+CsrMatrix* IluSolverGetMatrix(IluSolverHdl hdl) {
     return reinterpret_cast<IluSolver*>(hdl)->GetMatrix();
 }
 
@@ -24,7 +24,6 @@ int IluSolverFactorize(IluSolverHdl hdl, bool different_structure) {
             solver.SetupMatrix();
         }
         solver.Factorize();
-        solver.CollectLUMatrix();
     }
     catch (const std::exception& e) {
         if (std::string(e.what()) == "missing diag") {

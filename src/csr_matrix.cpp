@@ -1,4 +1,4 @@
-#include "csc_matrix.h"
+#include "csr_matrix.h"
 #include <algorithm>
 #include <tuple>
 #include <vector>
@@ -17,28 +17,28 @@ static void realloc_array(T*& arr, std::size_t size) {
     }
 }
 
-const CscMatrix CSC_MATRIX_DEFAULT;
+const CsrMatrix CSR_MATRIX_DEFAULT;
 
-void SetupCscMatrix(CscMatrix* mat, int size, long max_nnz) {
+void SetupCsrMatrix(CsrMatrix* mat, int size, long max_nnz) {
     mat->size = size;
     mat->max_nnz = max_nnz;
-    realloc_array(mat->col_ptr, size + 1);
-    realloc_array(mat->row_idx, max_nnz);
+    realloc_array(mat->row_ptr, size + 1);
+    realloc_array(mat->col_idx, max_nnz);
     realloc_array(mat->value, max_nnz);
 }
 
-void CopyCscMatrix(CscMatrix* dst, const CscMatrix* src) {
-    SetupCscMatrix(dst, src->size, src->max_nnz);
-    std::copy_n(src->col_ptr, src->size + 1, dst->col_ptr);
-    std::copy_n(src->row_idx, src->max_nnz, dst->row_idx);
+void CopyCsrMatrix(CsrMatrix* dst, const CsrMatrix* src) {
+    SetupCsrMatrix(dst, src->size, src->max_nnz);
+    std::copy_n(src->row_ptr, src->size + 1, dst->row_ptr);
+    std::copy_n(src->col_idx, src->max_nnz, dst->col_idx);
     std::copy_n(src->value, src->max_nnz, dst->value);
 }
 
-void DestroyCscMatrix(CscMatrix* mat) {
-    SetupCscMatrix(mat, -1, 0);
+void DestroyCsrMatrix(CsrMatrix* mat) {
+    SetupCsrMatrix(mat, -1, 0);
 }
 
-void ReadCscMatrixMM1(CscMatrix* mat, const char* filename) {
+void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
     std::FILE* fin = std::fopen(filename, "r");
     ON_SCOPE_EXIT { std::fclose(fin); };
     constexpr int kBufSize = 256;
@@ -59,7 +59,7 @@ void ReadCscMatrixMM1(CscMatrix* mat, const char* filename) {
                 if (m > n) {
                     n = m;
                 }
-                SetupCscMatrix(mat, n, nnz);
+                SetupCsrMatrix(mat, n, nnz);
                 elements.reserve(nnz);
                 is_first_line = false;
             }
@@ -71,23 +71,23 @@ void ReadCscMatrixMM1(CscMatrix* mat, const char* filename) {
                 if (ret != 3) {
                     continue;
                 }
-                elements.emplace_back(j - 1, i - 1, a);
+                elements.emplace_back(i - 1, j - 1, a);
             }
         }
     }
     std::sort(elements.begin(), elements.end());
     nnz = 0;
-    int last_j = -1;
-    for (auto [j, i, a] : elements) {
-        if (last_j < j) {
-            for (int jj = last_j + 1; jj <= j; ++jj) {
-                mat->col_ptr[jj] = nnz;
+    int last_i = -1;
+    for (auto [i, j, a] : elements) {
+        if (last_i < i) {
+            for (int ii = last_i + 1; ii <= i; ++ii) {
+                mat->row_ptr[ii] = nnz;
             }
-            last_j = j;
+            last_i = i;
         }
-        mat->row_idx[nnz] = i;
+        mat->col_idx[nnz] = j;
         mat->value[nnz] = a;
         ++nnz;
     }
-    mat->col_ptr[n] = nnz;
+    mat->row_ptr[n] = nnz;
 }

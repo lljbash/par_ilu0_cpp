@@ -20,7 +20,7 @@ void GmresSetPreconditioner(GmresHdl hdl, IluSolverHdl ilu) {
         ->SetIluPreconditioner(reinterpret_cast<IluSolver*>(ilu));
 }
 
-bool GmresSolve(GmresHdl hdl, const CscMatrix* mat, const double* rhs, double* sol, int* iter) {
+bool GmresSolve(GmresHdl hdl, const CsrMatrix* mat, const double* rhs, double* sol, int* iter) {
     auto ret = reinterpret_cast<PreconditionedGmres*>(hdl)->Solve(mat, rhs, sol);
     if (iter) {
         *iter = ret.second;

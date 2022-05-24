@@ -1,13 +1,13 @@
 #include "gmres.hpp"
 #include <cmath>
 #include <cblas.h>
-#include "csc_matvec.h"
+#include "csr_matvec.h"
 #include "scope_guard.hpp"
 
 namespace lljbash {
 
 std::pair<bool, int>
-PreconditionedGmres::Solve(const CscMatrix *mat, const double *rhs, double* sol) {
+PreconditionedGmres::Solve(const CsrMatrix *mat, const double *rhs, double* sol) {
     auto tol = param_.tolerance;
     auto im = param_.krylov_subspace_dimension;
     auto maxits = param_.max_iterations;
@@ -31,7 +31,7 @@ PreconditionedGmres::Solve(const CscMatrix *mat, const double *rhs, double* sol)
 /*-------------------- outer loop */
     while (its < maxits) {
 /*-------------------- compute initial residual vector */
-        CscMatVec(mat, sol, vv);
+        CsrMatVec(mat, sol, vv);
         for (int j = 0; j < n; ++j) {
             vv[j] = rhs[j] - vv[j]; // vv[0] = initial residual
         }
@@ -64,7 +64,7 @@ PreconditionedGmres::Solve(const CscMatrix *mat, const double *rhs, double* sol)
                 std::copy_n(vv + pti, n, z + pti);
             }
 /*-------------------- matvec operation w = A z_{j} = A M^{-1} v_{j} */
-            CscMatVec(mat, &z[pti], &vv[pti1]);
+            CsrMatVec(mat, &z[pti], &vv[pti1]);
 /*-------------------- modified gram - schmidt...
 |     h_{i,j} = (w,v_{i});
 |     w  = w - h_{i,j} v_{i}

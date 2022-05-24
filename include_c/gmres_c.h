@@ -23,7 +23,7 @@ GmresParameters* GmresGetParameters(GmresHdl hdl);
 void GmresSetPreconditioner(GmresHdl hdl, IluSolverHdl ilu);
 
 #define GmresSolve LLJBASH_DECL(GmresSolve)
-bool GmresSolve(GmresHdl hdl, const CscMatrix* mat, const double* rhs, double* sol, int* iter);
+bool GmresSolve(GmresHdl hdl, const CsrMatrix* mat, const double* rhs, double* sol, int* iter);
 
 #ifdef __cplusplus
 }

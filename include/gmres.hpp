@@ -19,7 +19,7 @@ public:
         precon_set_ = true;
     }
 
-    std::pair<bool, int> Solve(const CscMatrix* mat, const double* rhs, double* sol);
+    std::pair<bool, int> Solve(const CsrMatrix* mat, const double* rhs, double* sol);
 
 private:
     GmresParameters param_;

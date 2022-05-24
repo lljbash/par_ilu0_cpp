@@ -6,7 +6,7 @@
 #include <cstdbool>
 #endif
 
-#include "csc_matrix.h"
+#include "csr_matrix.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,7 +22,7 @@ IluSolverHdl IluSolverCreate(int nthreads);
 void IluSolverDestroy(IluSolverHdl hdl);
 
 #define IluSolverGetMatrix LLJBASH_DECL(IluSolverGetMatrix)
-CscMatrix* IluSolverGetMatrix(IluSolverHdl hdl);
+CsrMatrix* IluSolverGetMatrix(IluSolverHdl hdl);
 
 #define IluSolverFactorize LLJBASH_DECL(IluSolverFactorize)
 int IluSolverFactorize(IluSolverHdl hdl, bool different_structure);

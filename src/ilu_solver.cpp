@@ -28,7 +28,7 @@ static void destroy_array(T* arr) {
 
 namespace param {
 
-constexpr long transpose_min_nnz = 100000;
+constexpr long par_subs_min_nnz = 100000;
 constexpr int granu_min_n = 10000;
 constexpr double fact_fixed_subtree_weight = 1;
 constexpr double fact_fixed_queue_weight = 2;
@@ -70,29 +70,6 @@ public:
 
 using LoadBalancer = NNZLoadBalancer;
 
-struct CSRMatrix {
-    long* row_ptr = nullptr;
-    int* col_idx = nullptr;
-    long* a_map = nullptr;
-    double* a = nullptr;
-    long* diag_ptr = nullptr;
-
-    void create(int n, long nnz) {
-        row_ptr = new long[n+1](); // initialized to zero
-        col_idx = new int[nnz];
-        a_map = new long[nnz];
-        a = new double[nnz];
-        diag_ptr = new long[n];
-    }
-    void destroy() {
-        destroy_array(row_ptr);
-        destroy_array(col_idx);
-        destroy_array(a_map);
-        destroy_array(a);
-        destroy_array(diag_ptr);
-    }
-};
-
 struct SubtreePartition {
     int* part_ptr = nullptr;
     int* partitions = nullptr;
@@ -111,25 +88,19 @@ struct SubtreePartition {
 };
 
 struct IluSolver::Ext {
-    long* csc_diag_ptr = nullptr;
+    long* csr_diag_ptr = nullptr;
     std::atomic_bool* task_done = nullptr;
-    bool transpose_fact;
     bool paralleled_subs;
     bool packed;
     int subs_threads = 1;
-
-    CSRMatrix csr;
-    int* nnz_cnt;
 
     SubtreePartition subpart_fact;
     SubtreePartition subpart_subs_l;
     SubtreePartition subpart_subs_u;
 
     ~Ext() {
-        destroy_array(csc_diag_ptr);
+        destroy_array(csr_diag_ptr);
         destroy_array(task_done);
-        csr.destroy();
-        destroy_array(nnz_cnt);
         subpart_fact.destroy();
         subpart_subs_l.destroy();
         subpart_subs_u.destroy();
@@ -149,10 +120,10 @@ struct IluSolver::ThreadLocalExt {
 IluSolver::~IluSolver() {
     destroy_array(extt_);
     destroy_object(ext_);
-    DestroyCscMatrix(&iluMatrix_);
-    DestroyCscMatrix(&aMatrix_);
+    DestroyCsrMatrix(&aMatrix_);
 }
 
+#if 0
 static int64_t estimate_cost(int n, const long* vbegin, const long* vend, const int* /*vtx*/) {
     int64_t est = 0;
     for (int i = 0; i < n; ++i) {
@@ -160,10 +131,10 @@ static int64_t estimate_cost(int n, const long* vbegin, const long* vend, const 
     }
     return est;
 }
+#endif
 
 template<typename EXT>
 inline void print_algorithm(const EXT* ext_) {
-    puts(ext_->transpose_fact ? "up-looking" : "left-looking");
     printf(ext_->paralleled_subs ? "par-subs %d\n" : "seq-subs\n", ext_->subs_threads);
     puts(ext_->packed ? "packed tasks" : "single task");
 }
@@ -193,29 +164,28 @@ IluSolver::SetupMatrix() {
     printf("threads: %d\n", threads_);
 
     int n = aMatrix_.size;
-    long* col_ptr = aMatrix_.col_ptr;
-    int* row_idx = aMatrix_.row_idx;
-    long nnz = GetCscNonzeros(&aMatrix_);
+    long* row_ptr = aMatrix_.row_ptr;
+    int* col_idx = aMatrix_.col_idx;
+    long nnz = GetCsrNonzeros(&aMatrix_);
     destroy_object(ext_);
     ext_ = new Ext;
-    ext_->csc_diag_ptr = new long[n];
+    ext_->csr_diag_ptr = new long[n];
     ext_->task_done = new std::atomic_bool[n];
-    ext_->nnz_cnt = new int[n];
 
     // get diag_ptr
 #ifdef CHECK_DIAG
     bool missing_diag = false;
 #endif
 #pragma omp parallel for
-    for (int j = 0; j < n; ++j) {
-        for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
-            if (row_idx[ji] >= j) {
+    for (int i = 0; i < n; ++i) {
+        for (long ji = row_ptr[i]; ji < row_ptr[i+1]; ++ji) {
+            if (col_idx[ji] >= i) {
 #ifdef CHECK_DIAG
-                if (row_idx[ji] != j) {
+                if (col_idx[ji] != j) {
                     missing_diag = true;
                 }
 #endif
-                ext_->csc_diag_ptr[j] = ji;
+                ext_->csr_diag_ptr[i] = ji;
                 break;
             }
         }
@@ -226,43 +196,10 @@ IluSolver::SetupMatrix() {
     }
 #endif
 
-    // CSC -> CSR
-    auto csc2csr = [&]() {
-        ext_->csr.create(n, nnz);
-        for (long ji = 0; ji < nnz; ++ji) {
-            ++ext_->csr.row_ptr[row_idx[ji] + 1];
-        }
-        for (int i = 0; i < n; ++i) {
-            ext_->csr.row_ptr[i+1] += ext_->csr.row_ptr[i];
-        }
-        int* nnz_cnt = ext_->nnz_cnt;
-        std::fill_n(nnz_cnt, n, 0);
-        for (int j = 0; j < n; ++j) {
-#pragma omp parallel for
-            for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
-                int i = row_idx[ji];
-                long ii = ext_->csr.row_ptr[i] + nnz_cnt[i];
-                ext_->csr.col_idx[ii] = j;
-                ext_->csr.a_map[ii] = ji;
-                ++nnz_cnt[i];
-                if (i == j) {
-                    ext_->csr.diag_ptr[i] = ii;
-                }
-            }
-        }
-    };
-
-    if (threads_ == 1 || nnz < param::transpose_min_nnz) {
-        ext_->transpose_fact = false;
+    if (threads_ == 1 || nnz < param::par_subs_min_nnz) {
         ext_->paralleled_subs = false;
     }
     else {
-        csc2csr();
-        auto rl_est = estimate_cost(n, col_ptr, ext_->csc_diag_ptr, row_idx);
-        auto ul_est = estimate_cost(n, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx);
-        PRINT_LU_EST(rl_est, ul_est);
-        ext_->transpose_fact = rl_est > ul_est;
-        //ext_->transpose_fact = false;
         ext_->paralleled_subs = true;
         ext_->subs_threads = std::min(threads_, param::subs_max_threads);
     }
@@ -279,19 +216,13 @@ IluSolver::SetupMatrix() {
         out.create(p1, n);
         out.ntasks = tree_schedule(p1, p2, p3, p4, p5, p6, p7, out.part_ptr, out.partitions, out.task_queue, lb);
     };
-    if (!ext_->transpose_fact) {
-        LoadBalancer lb_fact {fact_granularity, col_ptr, ext_->csc_diag_ptr, 1};
-        get_subpart(threads_, 0, n, 1, col_ptr, ext_->csc_diag_ptr, row_idx, ext_->subpart_fact, lb_fact);
-    }
-    else {
-        LoadBalancer lb_fact {fact_granularity, ext_->csr.row_ptr, ext_->csr.diag_ptr, 1};
-        get_subpart(threads_, 0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->subpart_fact, lb_fact);
-    }
+    LoadBalancer lb_fact {fact_granularity, row_ptr, ext_->csr_diag_ptr, 1};
+    get_subpart(threads_, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_fact, lb_fact);
     if (ext_->paralleled_subs) {
-        LoadBalancer lb_subs1 {subs_granularity, ext_->csr.row_ptr,  ext_->csr.diag_ptr,    1};
-        LoadBalancer lb_subs2 {subs_granularity, ext_->csr.diag_ptr, ext_->csr.row_ptr + 1, 0};
-        get_subpart(ext_->subs_threads, 0, n, 1, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->subpart_subs_l, lb_subs1);
-        get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr.diag_ptr, 1}, ext_->csr.row_ptr + 1, ext_->csr.col_idx, ext_->subpart_subs_u, lb_subs2);
+        LoadBalancer lb_subs1 {subs_granularity, row_ptr,  ext_->csr_diag_ptr, 1};
+        LoadBalancer lb_subs2 {subs_granularity, ext_->csr_diag_ptr, row_ptr + 1, 0};
+        get_subpart(ext_->subs_threads, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_subs_l, lb_subs1);
+        get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr_diag_ptr, 1}, row_ptr + 1, col_idx, ext_->subpart_subs_u, lb_subs2);
     }
 
     destroy_array(extt_);
@@ -301,10 +232,6 @@ IluSolver::SetupMatrix() {
         int tid = omp_get_thread_num();
         extt_[tid].col_modification = new double[n * fact_granularity];
         extt_[tid].interupt = new long[std::max(fact_granularity, subs_granularity)];
-    }
-
-    if (!ext_->transpose_fact) {
-        CopyCscMatrix(&iluMatrix_, &aMatrix_);
     }
 }
 
@@ -477,42 +404,11 @@ IluSolver::Factorize() {
     // HERE, do triangle decomposition
     // to calculate the values in L and U
     int n = aMatrix_.size;
-    long nnz = GetCscNonzeros(&aMatrix_);
-    double* orig = aMatrix_.value;
-    const long* col_ptr;
-    const long* diag_ptr;
-    const int* row_idx;
-    double* a;
-    if (!ext_->transpose_fact) {
-        col_ptr = iluMatrix_.col_ptr;
-        diag_ptr = ext_->csc_diag_ptr;
-        row_idx = iluMatrix_.row_idx;
-        a = iluMatrix_.value;
-#pragma omp parallel for schedule(static, 2048)
-        for (int ii = 0; ii < nnz; ++ii) {
-            a[ii] = orig[ii];
-        }
-        fact_parallel_run<NonTranspose, ThreadLocalExt>(threads_, n, col_ptr, diag_ptr, row_idx, a, extt_, ext_->task_done, ext_->subpart_fact, ext_->packed);
-    }
-    else {
-        col_ptr = ext_->csr.row_ptr;
-        diag_ptr = ext_->csr.diag_ptr;
-        row_idx = ext_->csr.col_idx;
-        a = ext_->csr.a;
-#pragma omp parallel for schedule(static, 2048)
-        for (int ii = 0; ii < nnz; ++ii) {
-            a[ii] = orig[ext_->csr.a_map[ii]];
-        }
-        fact_parallel_run<Transpose, ThreadLocalExt>(threads_, n, col_ptr, diag_ptr, row_idx, a, extt_, ext_->task_done, ext_->subpart_fact, ext_->packed);
-    }
-
-    if (ext_->paralleled_subs && !ext_->transpose_fact) {
-#pragma omp parallel for schedule(static, 2048)
-        for (int ii = 0; ii < nnz; ++ii) {
-            ext_->csr.a[ii] = a[ext_->csr.a_map[ii]];
-        }
-    }
-
+    const long* col_ptr = aMatrix_.row_ptr;
+    const long* diag_ptr = ext_->csr_diag_ptr;
+    const int* row_idx = aMatrix_.col_idx;
+    double* a = aMatrix_.value;
+    fact_parallel_run<Transpose, ThreadLocalExt>(threads_, n, col_ptr, diag_ptr, row_idx, a, extt_, ext_->task_done, ext_->subpart_fact, ext_->packed);
     return true;
 }
 
@@ -580,27 +476,27 @@ IluSolver::Substitute(const double* b, double* x) {
         std::copy_n(b, n, x);
     }
     if (!ext_->paralleled_subs) {
-        long* col_ptr = iluMatrix_.col_ptr;
-        int* row_idx = iluMatrix_.row_idx;
-        double* a = iluMatrix_.value;
-        for (int j = 0; j < n; ++j) {
-            for (long ji = ext_->csc_diag_ptr[j] + 1; ji < col_ptr[j+1]; ++ji) {
-                int i = row_idx[ji];
+        long* row_ptr = aMatrix_.row_ptr;
+        int* col_idx = aMatrix_.col_idx;
+        double* a = aMatrix_.value;
+        for (int i = 0; i < n; ++i) {
+            for (long ji = row_ptr[i]; ji < ext_->csr_diag_ptr[i]; ++ji) {
+                int j = col_idx[ji];
                 x[i] -= x[j] * a[ji];
             }
         }
-        for (int j = n - 1; j >= 0; --j) {
-            x[j] /= a[ext_->csc_diag_ptr[j]];
-            for (long ji = col_ptr[j]; ji < ext_->csc_diag_ptr[j]; ++ji) {
-                int i = row_idx[ji];
+        for (int i = n - 1; i >= 0; --i) {
+            for (long ji = ext_->csr_diag_ptr[i] + 1; ji < row_ptr[i+1]; ++ji) {
+                int j = col_idx[ji];
                 x[i] -= x[j] * a[ji];
             }
+            x[i] /= a[ext_->csr_diag_ptr[i]];
         }
     }
     else if (ext_->packed) {
         int threads = ext_->subs_threads;
-#define SUBS_ROW(D, W) substitute_row_##D<W,false>(i, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->csr.a, x, ext_->task_done)
-#define SUBS_ROWR(D, W, I) substitute_row_##D<W,true>(i, ext_->csr.row_ptr, ext_->csr.diag_ptr, ext_->csr.col_idx, ext_->csr.a, x, ext_->task_done, I)
+#define SUBS_ROW(D, W) substitute_row_##D<W,false>(i, aMatrix_.row_ptr, ext_->csr_diag_ptr, aMatrix_.col_idx, aMatrix_.value, x, ext_->task_done)
+#define SUBS_ROWR(D, W, I) substitute_row_##D<W,true>(i, aMatrix_.row_ptr, ext_->csr_diag_ptr, aMatrix_.col_idx, aMatrix_.value, x, ext_->task_done, I)
         auto lfs = [&](int i, int) { SUBS_ROW(L, Skip); };
         auto lfw = [&](int i, int tid, int k) { SUBS_ROWR(L, Wait, extt_[tid].interupt[k]); };
         auto lfi = [&](int i, int tid, int k) { extt_[tid].interupt[k] = SUBS_ROW(L, Interupt); };
@@ -621,31 +517,6 @@ IluSolver::Substitute(const double* b, double* x) {
     }
 #undef SUBS_ROW
 #undef SUBS_ROWR
-}
-
-void
-IluSolver::CollectLUMatrix() {
-    // put L and U together into iluMatrix_
-    // as the diag of L is 1, set the diag of iluMatrix_ with u
-    // iluMatrix_ should have the same size and patterns with aMatrix_
-    if (ext_->transpose_fact) {
-        CopyCscMatrix(&iluMatrix_, &aMatrix_);
-        int n = iluMatrix_.size;
-        long* col_ptr = iluMatrix_.col_ptr;
-        int* row_idx = iluMatrix_.row_idx;
-        double* a = iluMatrix_.value;
-        int* nnz_cnt = ext_->nnz_cnt;
-        std::fill_n(nnz_cnt, n, 0);
-        for (int j = 0; j < n; ++j) {
-#pragma omp parallel for
-            for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
-                int i = row_idx[ji];
-                long ii = ext_->csr.row_ptr[i] + nnz_cnt[i];
-                a[ji] = ext_->csr.a[ii];
-                ++nnz_cnt[i];
-            }
-        }
-    }
 }
 
 } // namespace lljbash
