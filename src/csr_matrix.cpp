@@ -19,7 +19,7 @@ static void realloc_array(T*& arr, std::size_t size) {
 
 const CsrMatrix CSR_MATRIX_DEFAULT;
 
-void SetupCsrMatrix(CsrMatrix* mat, int size, long max_nnz) {
+void SetupCsrMatrix(CsrMatrix* mat, int size, int max_nnz) {
     mat->size = size;
     mat->max_nnz = max_nnz;
     realloc_array(mat->row_ptr, size + 1);
@@ -45,14 +45,14 @@ void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
     char buf[kBufSize];
     bool is_first_line = true;
     int n = -1;
-    long nnz = 0;
+    int nnz = 0;
     std::vector<std::tuple<int, int, double>> elements;
-    while ((is_first_line || static_cast<long>(elements.size()) < nnz)
+    while ((is_first_line || static_cast<int>(elements.size()) < nnz)
             && std::fgets(buf, kBufSize, fin)) {
         if (buf[0] != '%') {
             if (is_first_line) {
                 int m = -1;
-                int ret = std::sscanf(buf, "%d%d%ld", &n, &m, &nnz);
+                int ret = std::sscanf(buf, "%d%d%d", &n, &m, &nnz);
                 if (ret != 3) {
                     continue;
                 }

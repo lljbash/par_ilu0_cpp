@@ -9,8 +9,8 @@ extern "C" {
 #define CsrMatrix LLJBASH_DECL(CsrMatrix)
 struct CsrMatrix {
     int size LLJBASH_DEFAULT_VALUE(-1);
-    long max_nnz LLJBASH_DEFAULT_VALUE(0);
-    long* row_ptr LLJBASH_DEFAULT_VALUE(nullptr);
+    int max_nnz LLJBASH_DEFAULT_VALUE(0);
+    int* row_ptr LLJBASH_DEFAULT_VALUE(nullptr);
     int* col_idx LLJBASH_DEFAULT_VALUE(nullptr);
     double* value LLJBASH_DEFAULT_VALUE(nullptr);
 };
@@ -20,7 +20,7 @@ LLJBASH_STRUCT_TYPEDEF(CsrMatrix);
 extern const CsrMatrix CSR_MATRIX_DEFAULT;
 
 #define SetupCsrMatrix LLJBASH_DECL(SetupCsrMatrix)
-void SetupCsrMatrix(CsrMatrix* mat, int size, long max_nnz);
+void SetupCsrMatrix(CsrMatrix* mat, int size, int max_nnz);
 
 #define CopyCsrMatrix LLJBASH_DECL(CopyCsrMatrix)
 void CopyCsrMatrix(CsrMatrix* dst, const CsrMatrix* src);
@@ -29,7 +29,7 @@ void CopyCsrMatrix(CsrMatrix* dst, const CsrMatrix* src);
 void DestroyCsrMatrix(CsrMatrix* mat);
 
 #define GetCsrNonzeros LLJBASH_DECL(GetCsrNonzeros)
-inline long GetCsrNonzeros(const CsrMatrix* mat) {
+inline int GetCsrNonzeros(const CsrMatrix* mat) {
     return mat->row_ptr[mat->size];
 }
 

@@ -28,7 +28,7 @@ static void destroy_array(T* arr) {
 
 namespace param {
 
-constexpr long par_subs_min_nnz = 100000;
+constexpr int par_subs_min_nnz = 100000;
 constexpr int granu_min_n = 10000;
 constexpr double fact_fixed_subtree_weight = 1;
 constexpr double fact_fixed_queue_weight = 2;
@@ -55,7 +55,7 @@ public:
 
 class NNZLoadBalancer {
 public:
-    using weight_t = long;
+    using weight_t = int;
     weight_t weight_in_subtree(int i) const { return end_[i] - begin_[i] + base_; }
     weight_t weight_in_queue(int i) const { return end_[i] - begin_[i] + base_; }
     int queue_granularity() const { return queue_granularity_; }
@@ -88,7 +88,7 @@ struct SubtreePartition {
 };
 
 struct IluSolver::Ext {
-    long* csr_diag_ptr = nullptr;
+    int* csr_diag_ptr = nullptr;
     std::atomic_bool* task_done = nullptr;
     bool paralleled_subs;
     bool packed;
@@ -109,7 +109,7 @@ struct IluSolver::Ext {
 
 struct IluSolver::ThreadLocalExt {
     double* col_modification = nullptr;
-    long* interupt = nullptr;
+    int* interupt = nullptr;
 
     ~ThreadLocalExt() {
         destroy_array(col_modification);
@@ -124,7 +124,7 @@ IluSolver::~IluSolver() {
 }
 
 #if 0
-static int64_t estimate_cost(int n, const long* vbegin, const long* vend, const int* /*vtx*/) {
+static int64_t estimate_cost(int n, const int* vbegin, const int* vend, const int* /*vtx*/) {
     int64_t est = 0;
     for (int i = 0; i < n; ++i) {
         est += vend[i] - vbegin[i];
@@ -164,12 +164,12 @@ IluSolver::SetupMatrix() {
     printf("threads: %d\n", threads_);
 
     int n = aMatrix_.size;
-    long* row_ptr = aMatrix_.row_ptr;
+    int* row_ptr = aMatrix_.row_ptr;
     int* col_idx = aMatrix_.col_idx;
-    long nnz = GetCsrNonzeros(&aMatrix_);
+    int nnz = GetCsrNonzeros(&aMatrix_);
     destroy_object(ext_);
     ext_ = new Ext;
-    ext_->csr_diag_ptr = new long[n];
+    ext_->csr_diag_ptr = new int[n];
     ext_->task_done = new std::atomic_bool[n];
 
     // get diag_ptr
@@ -178,7 +178,7 @@ IluSolver::SetupMatrix() {
 #endif
 #pragma omp parallel for
     for (int i = 0; i < n; ++i) {
-        for (long ji = row_ptr[i]; ji < row_ptr[i+1]; ++ji) {
+        for (int ji = row_ptr[i]; ji < row_ptr[i+1]; ++ji) {
             if (col_idx[ji] >= i) {
 #ifdef CHECK_DIAG
                 if (col_idx[ji] != j) {
@@ -212,7 +212,7 @@ IluSolver::SetupMatrix() {
         subs_granularity = param::subs_granu;
     }
 
-    auto get_subpart = [n](int p1, int p2, int p3, int p4, ConstBiasArray<long> p5, const long* p6, const int* p7, SubtreePartition& out, const LoadBalancer& lb) {
+    auto get_subpart = [n](int p1, int p2, int p3, int p4, ConstBiasArray<int> p5, const int* p6, const int* p7, SubtreePartition& out, const LoadBalancer& lb) {
         out.create(p1, n);
         out.ntasks = tree_schedule(p1, p2, p3, p4, p5, p6, p7, out.part_ptr, out.partitions, out.task_queue, lb);
     };
@@ -231,7 +231,7 @@ IluSolver::SetupMatrix() {
     {
         int tid = omp_get_thread_num();
         extt_[tid].col_modification = new double[n * fact_granularity];
-        extt_[tid].interupt = new long[std::max(fact_granularity, subs_granularity)];
+        extt_[tid].interupt = new int[std::max(fact_granularity, subs_granularity)];
     }
 }
 
@@ -338,35 +338,35 @@ using Transpose = DiagnalScale<ScaleU, ScaleL>;  // For CSR format
 
 
 template <typename W, typename T, bool R>
-static long left_looking_col(int j, const long* col_ptr, const int* row_idx, double* a, const long* diag_ptr,
+static int left_looking_col(int j, const int* col_ptr, const int* row_idx, double* a, const int* diag_ptr,
                              double* col_modification, std::atomic_bool* task_done,
-                             long interupt = 0) { // -1: new; -2: finished; >= 0: interupted
-    long begin;
+                             int interupt = 0) { // -1: new; -2: finished; >= 0: interupted
+    int begin;
     if /*constexpr*/(R) {
         if (interupt == -2) {
             return -2;
         }
         begin = interupt;
     } else {
-        for (long ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
+        for (int ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
             col_modification[row_idx[ji]] = 0;
         }
         begin = col_ptr[j];
     }
-    long diag = diag_ptr[j];
-    for (long ji = begin; ji < diag; ++ji) {
+    int diag = diag_ptr[j];
+    for (int ji = begin; ji < diag; ++ji) {
         int k = row_idx[ji];
         if (!W::busy_waiting(&task_done[k])) {
             return ji;
         }
         a[ji] = T::scale_U(a[ji] + col_modification[k], a[diag_ptr[k]]);
-        for (long ki = diag_ptr[k] + 1; ki < col_ptr[k+1]; ++ki) {
+        for (int ki = diag_ptr[k] + 1; ki < col_ptr[k+1]; ++ki) {
             col_modification[row_idx[ki]] -= a[ki] * a[ji];
         }
     }
     a[diag] += col_modification[row_idx[diag]];
     double ajj = a[diag];
-    for (long ji = diag + 1; ji < col_ptr[j+1]; ++ji) {
+    for (int ji = diag + 1; ji < col_ptr[j+1]; ++ji) {
         a[ji] = T::scale_L(a[ji] + col_modification[row_idx[ji]], ajj);
     }
 
@@ -375,7 +375,7 @@ static long left_looking_col(int j, const long* col_ptr, const int* row_idx, dou
 }
 
 template<typename Trans, typename Ext>
-static void fact_parallel_run(int threads, int n, const long* col_ptr, const long* diag_ptr, const int* row_idx, double* a, Ext* ext, std::atomic_bool* task_done, SubtreePartition& subpart, bool packed) {
+static void fact_parallel_run(int threads, int n, const int* col_ptr, const int* diag_ptr, const int* row_idx, double* a, Ext* ext, std::atomic_bool* task_done, SubtreePartition& subpart, bool packed) {
     if (packed) {
         auto fs = [col_ptr, row_idx, a, diag_ptr, ext, task_done](int j, int tid) {
             left_looking_col<Skip, Trans, false>(j, col_ptr, row_idx, a, diag_ptr, ext[tid].col_modification, task_done);
@@ -404,8 +404,8 @@ IluSolver::Factorize() {
     // HERE, do triangle decomposition
     // to calculate the values in L and U
     int n = aMatrix_.size;
-    const long* col_ptr = aMatrix_.row_ptr;
-    const long* diag_ptr = ext_->csr_diag_ptr;
+    const int* col_ptr = aMatrix_.row_ptr;
+    const int* diag_ptr = ext_->csr_diag_ptr;
     const int* row_idx = aMatrix_.col_idx;
     double* a = aMatrix_.value;
     fact_parallel_run<Transpose, ThreadLocalExt>(threads_, n, col_ptr, diag_ptr, row_idx, a, extt_, ext_->task_done, ext_->subpart_fact, ext_->packed);
@@ -413,10 +413,10 @@ IluSolver::Factorize() {
 }
 
 template <typename W, bool R>
-long substitute_row_L(int i, const long* row_ptr, const long* diag_ptr, const int* col_idx,
+int substitute_row_L(int i, const int* row_ptr, const int* diag_ptr, const int* col_idx,
                         const double* lvalue, double* x, std::atomic_bool* task_done,
-                        long interupt = 0) {
-    long begin;
+                        int interupt = 0) {
+    int begin;
     if /*constexpr*/(R) {
         if (interupt == -2) {
             return -2;
@@ -426,7 +426,7 @@ long substitute_row_L(int i, const long* row_ptr, const long* diag_ptr, const in
         begin = row_ptr[i];
     }
     double xi = x[i];
-    for (long ii = begin, diag = diag_ptr[i]; ii < diag; ++ii) {
+    for (int ii = begin, diag = diag_ptr[i]; ii < diag; ++ii) {
         int j = col_idx[ii];
         if (!W::busy_waiting(&task_done[j])) {
             x[i] = xi;
@@ -440,10 +440,10 @@ long substitute_row_L(int i, const long* row_ptr, const long* diag_ptr, const in
 }
 
 template <typename W, bool R>
-long substitute_row_U(int i, const long* row_ptr, const long* diag_ptr, const int* col_idx,
+int substitute_row_U(int i, const int* row_ptr, const int* diag_ptr, const int* col_idx,
                         const double* uvalue, double* x, std::atomic_bool* task_done,
-                        long interupt = 0) {
-    long begin;
+                        int interupt = 0) {
+    int begin;
     if /*constexpr*/(R) {
         if (interupt == -2) {
             return -2;
@@ -453,8 +453,8 @@ long substitute_row_U(int i, const long* row_ptr, const long* diag_ptr, const in
         begin = row_ptr[i + 1] - 1;
     }
     double xi = x[i];
-    long diag = diag_ptr[i];
-    for (long ii = begin; ii > diag; --ii) { /* first complete first update */
+    int diag = diag_ptr[i];
+    for (int ii = begin; ii > diag; --ii) { /* first complete first update */
         int j = col_idx[ii];
         if (!W::busy_waiting(&task_done[j])) {
             x[i] = xi;
@@ -476,17 +476,17 @@ IluSolver::Substitute(const double* b, double* x) {
         std::copy_n(b, n, x);
     }
     if (!ext_->paralleled_subs) {
-        long* row_ptr = aMatrix_.row_ptr;
+        int* row_ptr = aMatrix_.row_ptr;
         int* col_idx = aMatrix_.col_idx;
         double* a = aMatrix_.value;
         for (int i = 0; i < n; ++i) {
-            for (long ji = row_ptr[i]; ji < ext_->csr_diag_ptr[i]; ++ji) {
+            for (int ji = row_ptr[i]; ji < ext_->csr_diag_ptr[i]; ++ji) {
                 int j = col_idx[ji];
                 x[i] -= x[j] * a[ji];
             }
         }
         for (int i = n - 1; i >= 0; --i) {
-            for (long ji = ext_->csr_diag_ptr[i] + 1; ji < row_ptr[i+1]; ++ji) {
+            for (int ji = ext_->csr_diag_ptr[i] + 1; ji < row_ptr[i+1]; ++ji) {
                 int j = col_idx[ji];
                 x[i] -= x[j] * a[ji];
             }

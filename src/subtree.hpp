@@ -30,7 +30,7 @@ static void sort_by_rank_ascend(int *x_begin, int *x_end, const Rank *rank)
 }
 
 static void build_etree_parent(int n, int vertex_begin, int vertex_end, int vertex_delta,
-                               const ConstBiasArray<long> &edge_begins, const long *edge_ends, const int *edge_dst,
+                               const ConstBiasArray<int> &edge_begins, const int *edge_ends, const int *edge_dst,
                                int *parent, int *root /* temporary */)
 {
     for (int v = vertex_begin; v != vertex_end; v += vertex_delta)
@@ -40,7 +40,7 @@ static void build_etree_parent(int n, int vertex_begin, int vertex_end, int vert
     }
     for (int j = vertex_begin; j != vertex_end; j += vertex_delta)
     {
-        for (long k = edge_begins[j]; k < edge_ends[j]; ++k)
+        for (int k = edge_begins[j]; k < edge_ends[j]; ++k)
         {
             int i = edge_dst[k];
             while (root[i] != n)
@@ -365,7 +365,7 @@ static int aggregate_nodes(int n, int *etree /* destroyed */, const int *post_or
 
 template <typename LoadBalancer>
 static void calculate_levels(int nsuper, const int *col2sup, const int *sup2col, const int *post_order,
-                             const ConstBiasArray<long> &edge_begins, const long *edge_ends, const int *edge_dst,
+                             const ConstBiasArray<int> &edge_begins, const int *edge_ends, const int *edge_dst,
                              typename LoadBalancer::weight_t *level, const LoadBalancer &load_balancer)
 {
     using weight_t = typename LoadBalancer::weight_t;
@@ -388,7 +388,7 @@ static void calculate_levels(int nsuper, const int *col2sup, const int *sup2col,
         for (int v = sup2col[i], v_end = sup2col[i + 1]; v < v_end; ++v)
         {
             int j = post_order[v];
-            for (long k = edge_begins[j]; k < edge_ends[j]; ++k)
+            for (int k = edge_begins[j]; k < edge_ends[j]; ++k)
             {
                 int ii = col2sup[edge_dst[k]];
                 if ((ii != etree_empty) && (ii != i))
@@ -420,7 +420,7 @@ static void build_queue(int n, int nsuper, const int *sup2col, const int *sup_pe
 
 template <typename LoadBalancer>
 static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end, int vertex_delta,
-                              ConstBiasArray<long> edge_begins, const long *edge_ends, const int *edge_dst,
+                              ConstBiasArray<int> edge_begins, const int *edge_ends, const int *edge_dst,
                               int *part_ptr, int *partitions, int *parent,
                               const LoadBalancer &load_balancer)
 {
@@ -480,7 +480,7 @@ static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end
 template <typename LoadBalancer>
 static int
 tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
-              ConstBiasArray<long> edge_begins, const long *edge_ends, const int *edge_dst,
+              ConstBiasArray<int> edge_begins, const int *edge_ends, const int *edge_dst,
               int *part_ptr /* output: length nproc + 1 */,
               int *partitions /* output: length n */,
               int *&task_queue /* output: allocated by `new`*/,
