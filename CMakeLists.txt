@@ -13,7 +13,7 @@ endif()
 # uncomment to modify default settings
 #set(CMAKE_CXX_FLAGS_DEBUG "-g -fsanitize=address -fno-omit-frame-pointer")
 #set(CMAKE_C_FLAGS_DEBUG "-g -fsanitize=address -fno-omit-frame-pointer")
-#set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE "-fast -DNDEBUG")
 #set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
 #set(CMAKE_CXX_FLAGS_MINSIZEREL "-Os -DNDEBUG")
 

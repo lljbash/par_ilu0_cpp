@@ -8,28 +8,33 @@ namespace lljbash {
 
 class PreconditionedGmres {
 public:
-    GmresParameters& param() {
-        return param_;
-    }
+    ~PreconditionedGmres();
+
+    GmresParameters& param() { return param_; }
+    GmresStat& stat() { return stat_; }
 
     void SetIluPreconditioner(IluSolver* ilu_solver) {
         precon_ = [ilu_solver](const double* rhs, double* sol) {
             ilu_solver->Substitute(rhs, sol);
         };
-        precon_set_ = true;
     }
 
-    std::pair<bool, int> Solve(const CsrMatrix* mat, const double* rhs, double* sol);
+    std::pair<bool, int> Solve(const CsrMatrix* mat, double* rhs, double* sol);
 
 private:
+    void SetupMkl(int n);
+
     GmresParameters param_;
-    bool precon_set_ = false;
     std::function<void(const double*, double*)> precon_;
+    GmresStat stat_;
     struct {
-        std::vector<double> vv;
-        std::vector<double> z;
-        std::vector<double> hh;
-    } intermediate;
+        bool setup = false;
+        int ipar[128];
+        double dpar[128];
+        double* tmp;
+        double* b;
+        double* residual;
+    } mkl_;
 };
 
 } // namespace lljbash

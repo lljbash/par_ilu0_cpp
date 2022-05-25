@@ -4,24 +4,28 @@
 using namespace lljbash;
 
 GmresHdl GmresCreate() {
-    return reinterpret_cast<GmresHdl>(new PreconditionedGmres);
+    return static_cast<GmresHdl>(new PreconditionedGmres);
 }
 
 void GmresDestroy(GmresHdl hdl) {
-    delete reinterpret_cast<PreconditionedGmres*>(hdl);
+    delete static_cast<PreconditionedGmres*>(hdl);
 }
 
 GmresParameters* GmresGetParameters(GmresHdl hdl) {
-    return &reinterpret_cast<PreconditionedGmres*>(hdl)->param();
+    return &static_cast<PreconditionedGmres*>(hdl)->param();
+}
+
+const GmresStat* GmresGetStat(GmresHdl hdl) {
+    return &static_cast<PreconditionedGmres*>(hdl)->stat();
 }
 
 void GmresSetPreconditioner(GmresHdl hdl, IluSolverHdl ilu) {
-    reinterpret_cast<PreconditionedGmres*>(hdl)
-        ->SetIluPreconditioner(reinterpret_cast<IluSolver*>(ilu));
+    static_cast<PreconditionedGmres*>(hdl)
+        ->SetIluPreconditioner(static_cast<IluSolver*>(ilu));
 }
 
-bool GmresSolve(GmresHdl hdl, const CsrMatrix* mat, const double* rhs, double* sol, int* iter) {
-    auto ret = reinterpret_cast<PreconditionedGmres*>(hdl)->Solve(mat, rhs, sol);
+bool GmresSolve(GmresHdl hdl, const CsrMatrix* mat, double* rhs, double* sol, int* iter) {
+    auto ret = static_cast<PreconditionedGmres*>(hdl)->Solve(mat, rhs, sol);
     if (iter) {
         *iter = ret.second;
     }

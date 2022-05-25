@@ -2,15 +2,16 @@
 #include <algorithm>
 #include <tuple>
 #include <vector>
+#include <mkl.h>
 #include "scope_guard.hpp"
 
 template <typename T>
 static void realloc_array(T*& arr, std::size_t size) {
     if (arr) {
-        delete [] arr;
+        mkl_free(arr);
     }
     if (size) {
-        arr = new T[size]{};
+        arr = static_cast<T*>(mkl_malloc(sizeof(T[size]), 64));
     }
     else {
         arr = nullptr;

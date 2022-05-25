@@ -14,6 +14,15 @@ struct GmresParameters {
 };
 LLJBASH_STRUCT_TYPEDEF(GmresParameters);
 
+#define GmresStat LLJBASH_DECL(GmresStat)
+struct GmresStat {
+    double total_init_time LLJBASH_DEFAULT_VALUE(0.0);
+    double total_fgmr_time LLJBASH_DEFAULT_VALUE(0.0);
+    double total_mv_time LLJBASH_DEFAULT_VALUE(0.0);
+    double total_precon_time LLJBASH_DEFAULT_VALUE(0.0);
+};
+LLJBASH_STRUCT_TYPEDEF(GmresStat);
+
 #ifdef __cplusplus
 }
 #endif

@@ -19,11 +19,14 @@ void GmresDestroy(GmresHdl hdl);
 #define GmresGetParameters LLJBASH_DECL(GmresGetParameters)
 GmresParameters* GmresGetParameters(GmresHdl hdl);
 
+#define GmresGetStat LLJBASH_DECL(GmresGetStat)
+const GmresStat* GmresGetStat(GmresHdl hdl);
+
 #define GmresSetPreconditioner LLJBASH_DECL(GmresSetPreconditioner)
 void GmresSetPreconditioner(GmresHdl hdl, IluSolverHdl ilu);
 
 #define GmresSolve LLJBASH_DECL(GmresSolve)
-bool GmresSolve(GmresHdl hdl, const CsrMatrix* mat, const double* rhs, double* sol, int* iter);
+bool GmresSolve(GmresHdl hdl, const CsrMatrix* mat, double* rhs, double* sol, int* iter);
 
 #ifdef __cplusplus
 }

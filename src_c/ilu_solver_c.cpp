@@ -10,15 +10,15 @@ IluSolverHdl IluSolverCreate(int nthreads) {
 }
 
 void IluSolverDestroy(IluSolverHdl hdl) {
-    delete reinterpret_cast<IluSolver*>(hdl);
+    delete static_cast<IluSolver*>(hdl);
 }
 
 CsrMatrix* IluSolverGetMatrix(IluSolverHdl hdl) {
-    return reinterpret_cast<IluSolver*>(hdl)->GetMatrix();
+    return static_cast<IluSolver*>(hdl)->GetMatrix();
 }
 
 int IluSolverFactorize(IluSolverHdl hdl, bool different_structure) {
-    IluSolver& solver = *reinterpret_cast<IluSolver*>(hdl);
+    IluSolver& solver = *static_cast<IluSolver*>(hdl);
     try {
         if (different_structure) {
             solver.SetupMatrix();
