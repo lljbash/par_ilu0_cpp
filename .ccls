@@ -14,5 +14,6 @@ clang
 -fexceptions
 -DEDITOR
 -I/usr/local/include
+-I/opt/intel/oneapi/mkl/latest/include
 -I./include
 -I./include_c

@@ -1,6 +1,6 @@
 #include "gmres.hpp"
 #include <cmath>
-#include <cblas.h>
+#include <mkl.h>
 #include "csr_matvec.h"
 #include "scope_guard.hpp"
 

@@ -1,3 +1,6 @@
+set(CMAKE_C_COMPILER "icc")
+set(CMAKE_CXX_COMPILER "icpc")
+
 project(par_ilu0_gmres C CXX)
 cmake_minimum_required(VERSION 3.10)
 
