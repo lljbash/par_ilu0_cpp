@@ -50,7 +50,7 @@ PreconditionedGmres::Solve(const CsrMatrix *mat, double *rhs, double* sol) {
     MKL_INT* ia = mat->row_ptr;
     MKL_INT* ja = mat->col_idx;
     double* A = mat->value;
-    struct matrix_descr descrA;
+    matrix_descr descrA;
     sparse_matrix_t csrA = NULL;
     sparse_operation_t transA = SPARSE_OPERATION_NON_TRANSPOSE;
     descrA.type = SPARSE_MATRIX_TYPE_GENERAL;
@@ -117,11 +117,11 @@ COMPLETE:
     ipar[12] = 0;
     dfgmres_get(&n, sol, rhs, &RCI_request, ipar, dpar, tmp, &iter);
     stat_.total_fgmr_time += Toc(tic);
-    ret = {true, iter + 1};
+    ret = {true, iter};
     goto END;
 
 FAILED:
-    ret = {false, iter + 1};
+    ret = {false, iter};
     goto END;
 
 END:

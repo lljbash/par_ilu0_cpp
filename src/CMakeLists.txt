@@ -15,3 +15,7 @@ target_include_directories(par-ilu0-gmres
 if (${SHOW_ALGORITHM})
     target_compile_definitions(par-ilu0-gmres PRIVATE SHOW_ALGORITHM)
 endif()
+
+if (${USE_MKL})
+    target_compile_definitions(par-ilu0-gmres PRIVATE USE_MKL_ILU=0 USE_MKL_SV=1)
+endif()

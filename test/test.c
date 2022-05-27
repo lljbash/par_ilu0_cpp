@@ -56,6 +56,7 @@ EXIT:
     free(x);
     free(sol);
     free(rhs);
+    DestroyCsrMatrix(&a);
     IluSolverDestroy(ilu);
     return ret;
 }

@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <atomic>
 #include <omp.h>
+#if USE_MKL_ILU || USE_MKL_SV
+#include <mkl.h>
+#endif
 #include "scope_guard.hpp"
 #include "subtree.hpp"
 
@@ -98,12 +101,50 @@ struct IluSolver::Ext {
     SubtreePartition subpart_subs_l;
     SubtreePartition subpart_subs_u;
 
+#if USE_MKL_ILU
+#pragma message("use mkl ilu")
+    MKL_INT* ia = nullptr;
+    MKL_INT* ja = nullptr;
+    double* bilu = nullptr;
+    MKL_INT ipar[128];
+    double dpar[128];
+    struct Trash {
+        std::vector<double> sol;
+        std::vector<double> rhs;
+        std::vector<double> tmp;
+        void Setup(int n) {
+            sol.resize(n);
+            rhs.resize(n);
+            auto d = std::min(n, 150);
+            auto tmp_size = (2 * d + 1) * n + d * (d + 9) / 2 + 1;
+            tmp.resize(tmp_size);
+        }
+    } trash;
+#endif
+
+#if USE_MKL_SV
+#pragma message("use mkl sv")
+    sparse_matrix_t csrL = nullptr;
+    sparse_matrix_t csrU = nullptr;
+    double* trvec = nullptr;
+#endif
+
     ~Ext() {
         destroy_array(csr_diag_ptr);
         destroy_array(task_done);
         subpart_fact.destroy();
         subpart_subs_l.destroy();
         subpart_subs_u.destroy();
+#if USE_MKL_ILU
+        if (ia) { mkl_free(ia); }
+        if (ja) { mkl_free(ja); }
+        if (bilu) { mkl_free(bilu); }
+#endif
+#if USE_MKL_SV
+        if (csrL) { mkl_sparse_destroy(csrL); }
+        if (csrU) { mkl_sparse_destroy(csrU); }
+        if (trvec) { mkl_free(trvec); }
+#endif
     }
 };
 
@@ -121,6 +162,9 @@ IluSolver::~IluSolver() {
     destroy_array(extt_);
     destroy_object(ext_);
     DestroyCsrMatrix(&aMatrix_);
+#if USE_MKL_ILU || USE_MKL_SV
+    MKL_Free_Buffers();
+#endif
 }
 
 #if 0
@@ -171,6 +215,28 @@ IluSolver::SetupMatrix() {
     ext_ = new Ext;
     ext_->csr_diag_ptr = new int[n];
     ext_->task_done = new std::atomic_bool[n];
+#if USE_MKL_ILU
+    ext_->ia = static_cast<int*>(mkl_malloc(sizeof(int[n+1]), 64));
+    ext_->ja = static_cast<int*>(mkl_malloc(sizeof(int[nnz]), 64));
+    ext_->bilu = static_cast<double*>(mkl_malloc(sizeof(double[nnz]), 64));
+    ext_->trash.Setup(n);
+    int RCI_request;
+    dfgmres_init(&n, ext_->trash.sol.data(), ext_->trash.rhs.data(), &RCI_request, ext_->ipar, ext_->dpar, ext_->trash.tmp.data());
+    ext_->ipar[30] = 0;
+    //ext_->ipar[30] = 1;
+    //ext_->dpar[30] = 1e-20;
+    //ext_->dpar[31] = 1e-16;
+#pragma omp parallel for
+    for (int i = 0; i <= n; ++i) {
+        ext_->ia[i] = row_ptr[i] + 1;
+    }
+    for (int i = 0; i < nnz; ++i) {
+        ext_->ja[i] = col_idx[i] + 1;
+    }
+#endif
+#if USE_MKL_SV
+    ext_->trvec = static_cast<double*>(mkl_malloc(sizeof(double[n]), 64));
+#endif
 
     // get diag_ptr
 #ifdef CHECK_DIAG
@@ -404,11 +470,37 @@ IluSolver::Factorize() {
     // HERE, do triangle decomposition
     // to calculate the values in L and U
     int n = aMatrix_.size;
+#if USE_MKL_ILU
+    int err;
+    dcsrilu0(&n, aMatrix_.value, ext_->ia, ext_->ja, ext_->bilu, ext_->ipar, ext_->dpar, &err);
+    //std::swap(ext_->bilu, aMatrix_.value);
+    int one = 1;
+    int nnz = GetCsrNonzeros(&aMatrix_);
+    dcopy(&nnz, ext_->bilu, &one, aMatrix_.value, &one);
+    return err == 0;
+#else
     const int* col_ptr = aMatrix_.row_ptr;
     const int* diag_ptr = ext_->csr_diag_ptr;
     const int* row_idx = aMatrix_.col_idx;
     double* a = aMatrix_.value;
+//#pragma omp parallel for
+    //for (int i = 0; i < n; ++i) {
+        //if (a[diag_ptr[i]] < 1e-16) {
+            //a[diag_ptr[i]] = 1e-10;
+        //}
+    //}
     fact_parallel_run<Transpose, ThreadLocalExt>(threads_, n, col_ptr, diag_ptr, row_idx, a, extt_, ext_->task_done, ext_->subpart_fact, ext_->packed);
+#endif
+#if USE_MKL_SV
+    if (ext_->csrL) {
+        mkl_sparse_destroy(ext_->csrL);
+        ext_->csrL = nullptr;
+    }
+    if (ext_->csrU) {
+        mkl_sparse_destroy(ext_->csrU);
+        ext_->csrU = nullptr;
+    }
+#endif
     return true;
 }
 
@@ -472,6 +564,28 @@ IluSolver::Substitute(const double* b, double* x) {
     // HERE, use the L and U calculated by ILUSolver::Factorize to solve the triangle systems
     // to calculate the x
     int n = aMatrix_.size;
+#if USE_MKL_SV
+    auto& csrL = ext_->csrL;
+    auto& csrU = ext_->csrU;
+    matrix_descr descrL;
+    descrL.type = SPARSE_MATRIX_TYPE_TRIANGULAR;
+    descrL.mode = SPARSE_FILL_MODE_LOWER;
+    descrL.diag = SPARSE_DIAG_UNIT;
+    matrix_descr descrU;
+    descrU.type = SPARSE_MATRIX_TYPE_TRIANGULAR;
+    descrU.mode = SPARSE_FILL_MODE_UPPER;
+    descrU.diag = SPARSE_DIAG_NON_UNIT;
+    if (!csrL) {
+        mkl_sparse_d_create_csr(&csrL, SPARSE_INDEX_BASE_ZERO, n, n, aMatrix_.row_ptr, aMatrix_.row_ptr+1, aMatrix_.col_idx, aMatrix_.value);
+        mkl_sparse_set_sv_hint(csrL, SPARSE_OPERATION_NON_TRANSPOSE, descrL, 50);
+        mkl_sparse_optimize(csrL);
+        mkl_sparse_d_create_csr(&csrU, SPARSE_INDEX_BASE_ZERO, n, n, aMatrix_.row_ptr, aMatrix_.row_ptr+1, aMatrix_.col_idx, aMatrix_.value);
+        mkl_sparse_set_sv_hint(csrU, SPARSE_OPERATION_NON_TRANSPOSE, descrU, 50);
+        mkl_sparse_optimize(csrU);
+    }
+    mkl_sparse_d_trsv(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, csrL, descrL, b, ext_->trvec);
+    mkl_sparse_d_trsv(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, csrU, descrU, ext_->trvec, x);
+#else
     if (b != x) {
         std::copy_n(b, n, x);
     }
@@ -517,6 +631,7 @@ IluSolver::Substitute(const double* b, double* x) {
     }
 #undef SUBS_ROW
 #undef SUBS_ROWR
+#endif
 }
 
 } // namespace lljbash
