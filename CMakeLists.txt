@@ -1,5 +1,7 @@
-set(CMAKE_C_COMPILER "icc")
-set(CMAKE_CXX_COMPILER "icpc")
+#set(CMAKE_C_COMPILER "icc")
+#set(CMAKE_CXX_COMPILER "icpc")
+#set(CMAKE_C_COMPILER "gcc-12")
+#set(CMAKE_CXX_COMPILER "g++-12")
 
 project(par_ilu0_gmres C CXX)
 cmake_minimum_required(VERSION 3.10)
@@ -13,7 +15,8 @@ endif()
 # uncomment to modify default settings
 #set(CMAKE_CXX_FLAGS_DEBUG "-g -fsanitize=address -fno-omit-frame-pointer")
 #set(CMAKE_C_FLAGS_DEBUG "-g -fsanitize=address -fno-omit-frame-pointer")
-set(CMAKE_CXX_FLAGS_RELEASE "-fast -DNDEBUG")
+#set(CMAKE_CXX_FLAGS_RELEASE "-fast -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -funroll-loops -march=native -ffast-math -DNDEBUG")
 #set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
 #set(CMAKE_CXX_FLAGS_MINSIZEREL "-Os -DNDEBUG")
 

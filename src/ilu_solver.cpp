@@ -183,13 +183,23 @@ inline void print_algorithm(const EXT* ext_) {
     puts(ext_->packed ? "packed tasks" : "single task");
 }
 
+inline void print_subtree(const char* name, int threads, int n, const SubtreePartition& subtree) {
+    printf("subtree %s: ", name);
+    for (int i = 0; i < threads; ++i) {
+        printf("%d ", subtree.part_ptr[i+1] - subtree.part_ptr[i]);
+    }
+    printf("[%d]\n", n - subtree.part_ptr[threads]);
+}
+
 #ifdef SHOW_ALGORITHM
 #define PRINT_LU_EST(rl_est, ul_est) printf("U: %ld\nL: %ld\n", rl_est, ul_est);
 //std::cout << "U: " << rl_est << std::endl << "L: " << ul_est << std::endl;
 #define PRINT_ALGORITHM(e) print_algorithm(e)
+#define PRINT_SUBTREE(...) print_subtree(__VA_ARGS__)
 #else
 #define PRINT_LU_EST(r, u)
 #define PRINT_ALGORITHM(e)
+#define PRINT_SUBTREE(...)
 #endif
 
 void
@@ -230,6 +240,7 @@ IluSolver::SetupMatrix() {
     for (int i = 0; i <= n; ++i) {
         ext_->ia[i] = row_ptr[i] + 1;
     }
+#pragma omp parallel for
     for (int i = 0; i < nnz; ++i) {
         ext_->ja[i] = col_idx[i] + 1;
     }
@@ -284,11 +295,14 @@ IluSolver::SetupMatrix() {
     };
     LoadBalancer lb_fact {fact_granularity, row_ptr, ext_->csr_diag_ptr, 1};
     get_subpart(threads_, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_fact, lb_fact);
+    PRINT_SUBTREE("Fact", threads_, n, ext_->subpart_fact);
     if (ext_->paralleled_subs) {
         LoadBalancer lb_subs1 {subs_granularity, row_ptr,  ext_->csr_diag_ptr, 1};
         LoadBalancer lb_subs2 {subs_granularity, ext_->csr_diag_ptr, row_ptr + 1, 0};
         get_subpart(ext_->subs_threads, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_subs_l, lb_subs1);
         get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr_diag_ptr, 1}, row_ptr + 1, col_idx, ext_->subpart_subs_u, lb_subs2);
+        PRINT_SUBTREE("SubsL", threads_, n, ext_->subpart_subs_l);
+        PRINT_SUBTREE("SubsU", threads_, n, ext_->subpart_subs_u);
     }
 
     destroy_array(extt_);
@@ -327,7 +341,7 @@ static void subpart_parallel_run(int threads, int n, const SubtreePartition& sub
                                  std::atomic_bool* task_done) {
     std::atomic_int task_head;
     int task_tail;
-    if /* constexpr */ (std::is_same<JobI, std::nullptr_t>::value) {
+    if constexpr (std::is_same<JobI, std::nullptr_t>::value) {
         task_head.store(subpart.part_ptr[threads], std::memory_order_relaxed);
         task_tail = n;
     }
@@ -408,7 +422,7 @@ static int left_looking_col(int j, const int* col_ptr, const int* row_idx, doubl
                              double* col_modification, std::atomic_bool* task_done,
                              int interupt = 0) { // -1: new; -2: finished; >= 0: interupted
     int begin;
-    if /*constexpr*/(R) {
+    if constexpr (R) {
         if (interupt == -2) {
             return -2;
         }
@@ -509,7 +523,7 @@ int substitute_row_L(int i, const int* row_ptr, const int* diag_ptr, const int* 
                         const double* lvalue, double* x, std::atomic_bool* task_done,
                         int interupt = 0) {
     int begin;
-    if /*constexpr*/(R) {
+    if constexpr (R) {
         if (interupt == -2) {
             return -2;
         }
@@ -536,7 +550,7 @@ int substitute_row_U(int i, const int* row_ptr, const int* diag_ptr, const int* 
                         const double* uvalue, double* x, std::atomic_bool* task_done,
                         int interupt = 0) {
     int begin;
-    if /*constexpr*/(R) {
+    if constexpr (R) {
         if (interupt == -2) {
             return -2;
         }

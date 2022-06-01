@@ -17,12 +17,25 @@ CsrMatrix* IluSolverGetMatrix(IluSolverHdl hdl) {
     return static_cast<IluSolver*>(hdl)->GetMatrix();
 }
 
-int IluSolverFactorize(IluSolverHdl hdl, bool different_structure) {
+int IluSolverSetup(IluSolverHdl hdl) {
     IluSolver& solver = *static_cast<IluSolver*>(hdl);
     try {
-        if (different_structure) {
-            solver.SetupMatrix();
+        solver.SetupMatrix();
+    }
+    catch (const std::exception& e) {
+        if (std::string(e.what()) == "missing diag") {
+            return -2;
         }
+        else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int IluSolverFactorize(IluSolverHdl hdl) {
+    IluSolver& solver = *static_cast<IluSolver*>(hdl);
+    try {
         solver.Factorize();
     }
     catch (const std::exception& e) {

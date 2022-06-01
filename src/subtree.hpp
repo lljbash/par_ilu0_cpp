@@ -4,6 +4,7 @@
 #include <memory>
 #include <algorithm>
 #include <atomic>
+#include "heap.hpp"
 
 namespace lljbash {
 
@@ -100,6 +101,19 @@ static int divide_subtree(int n, int nproc, const int *first_child, const int *n
     }
     subtrees[0] = n;
 
+    auto comp = [subtree_weight](int a, int b) {
+        if (subtree_weight[a] > subtree_weight[b]) {
+            return -1;
+        }
+        else if (subtree_weight[a] < subtree_weight[b]) {
+            return 1;
+        }
+        else {
+            return 0;
+        }
+    };
+    lljbash::Heap<int, decltype(comp)> heap(comp);
+    heap.Push(subtrees[0]);
     while (ngen > 0 && max_weight * nproc > sum_weight)
     {
         int t = subtrees[max_weight_pos], f = first_child[t];
@@ -112,6 +126,7 @@ static int divide_subtree(int n, int nproc, const int *first_child, const int *n
         {
             subtrees[--ichain] = subtrees[max_weight_pos];
             subtrees[max_weight_pos] = subtrees[--ngen];
+            heap.Pop();
         }
         else
         {
@@ -119,23 +134,39 @@ static int divide_subtree(int n, int nproc, const int *first_child, const int *n
             sum_weight -= subtree_weight[subtrees[max_weight_pos]];
             ch = first_child[t];
             subtrees[max_weight_pos] = ch;
+            heap.ModifyKey(max_weight_pos, ch);
             sum_weight += subtree_weight[ch];
             while (next_sibling[ch] >= 0)
             {
                 ch = next_sibling[ch];
                 subtrees[ngen++] = ch;
+                heap.Push(ch);
                 sum_weight += subtree_weight[ch];
             }
         }
         // 线程数较多的时候，子树数量也会较多，可以改成heap
-        max_weight = 0, max_weight_pos = 0;
-        for (int i = 0; i < ngen; ++i)
-        {
-            if (max_weight < subtree_weight[subtrees[i]])
-            {
-                max_weight = subtree_weight[subtrees[i]];
-                max_weight_pos = i;
-            }
+        //max_weight = 0, max_weight_pos = 0;
+        //for (int i = 0; i < ngen; ++i)
+        //{
+            //if (max_weight < subtree_weight[subtrees[i]])
+            //{
+                //max_weight = subtree_weight[subtrees[i]];
+                //max_weight_pos = i;
+            //}
+        //}
+        if (ngen > 0) {
+            max_weight_pos = heap.Top().first;
+            max_weight = subtree_weight[subtrees[max_weight_pos]];
+            //auto [mwp, mw] = heap.Top();
+            //if (subtree_weight[mw] == max_weight && mwp == max_weight_pos) {
+                //printf("[%d %d] [%d %d] ", max_weight, max_weight_pos, subtree_weight[mw], mwp);
+                //printf("OK\n");
+            //}
+            //else {
+                //printf("[%d %d] [%d %d] ", max_weight, max_weight_pos, subtree_weight[mw], mwp);
+                //printf("FUCK!\n");
+                //exit(-1);
+            //}
         }
     }
     if (ngen > 0)

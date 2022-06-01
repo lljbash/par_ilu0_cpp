@@ -24,8 +24,11 @@ void IluSolverDestroy(IluSolverHdl hdl);
 #define IluSolverGetMatrix LLJBASH_DECL(IluSolverGetMatrix)
 CsrMatrix* IluSolverGetMatrix(IluSolverHdl hdl);
 
+#define IluSolverSetup LLJBASH_DECL(IluSolverSetup)
+int IluSolverSetup(IluSolverHdl hdl);
+
 #define IluSolverFactorize LLJBASH_DECL(IluSolverFactorize)
-int IluSolverFactorize(IluSolverHdl hdl, bool different_structure);
+int IluSolverFactorize(IluSolverHdl hdl);
 
 #ifdef __cplusplus
 }

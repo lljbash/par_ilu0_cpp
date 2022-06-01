@@ -1,4 +1,5 @@
 #include "csr_matrix.h"
+#include <cstdio>
 #include <algorithm>
 #include <tuple>
 #include <vector>

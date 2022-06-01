@@ -12,10 +12,10 @@ int main(int argc, char* argv[]) {
     int ret = 0;
     IluSolverHdl ilu = IluSolverCreate(0);
     CsrMatrix a = CSR_MATRIX_DEFAULT;
+    puts("Reading...");
     ReadCsrMatrixMM1(&a, argv[1]);
     CsrMatrix* ailu = IluSolverGetMatrix(ilu);
     CopyCsrMatrix(ailu, &a);
-    puts("Reading...");
     double* rhs = (double*) calloc(a.size, sizeof(double));
     double* sol = (double*) calloc(a.size, sizeof(double));
     double* x = (double*) calloc(a.size, sizeof(double));
@@ -24,7 +24,8 @@ int main(int argc, char* argv[]) {
     }
     CsrMatVec(&a, sol, rhs);
     puts("Factorizing...");
-    IluSolverFactorize(ilu, true);
+    IluSolverSetup(ilu);
+    IluSolverFactorize(ilu);
     GmresHdl gmres = GmresCreate();
     GmresParameters* param = GmresGetParameters(gmres);
     GmresSetPreconditioner(gmres, ilu);
