@@ -10,6 +10,7 @@
 #endif
 #include "scope_guard.hpp"
 #include "subtree.hpp"
+#include "tictoc.hpp"
 
 namespace lljbash {
 
@@ -31,7 +32,7 @@ static void destroy_array(T* arr) {
 
 namespace param {
 
-constexpr int par_subs_min_nnz = 100000;
+constexpr int par_subs_min_nnz_per_line = 20;
 constexpr int granu_min_n = 10000;
 constexpr double fact_fixed_subtree_weight = 1;
 constexpr double fact_fixed_queue_weight = 2;
@@ -93,7 +94,7 @@ struct SubtreePartition {
 struct IluSolver::Ext {
     int* csr_diag_ptr = nullptr;
     std::atomic_bool* task_done = nullptr;
-    bool paralleled_subs;
+    bool paralleled_subs_queue;
     bool packed;
     int subs_threads = 1;
 
@@ -158,6 +159,8 @@ struct IluSolver::ThreadLocalExt {
     }
 };
 
+double ttt[2] = {0};
+
 IluSolver::~IluSolver() {
     destroy_array(extt_);
     destroy_object(ext_);
@@ -165,6 +168,7 @@ IluSolver::~IluSolver() {
 #if USE_MKL_ILU || USE_MKL_SV
     MKL_Free_Buffers();
 #endif
+    printf("%f %f\n", ttt[0], ttt[1]);
 }
 
 #if 0
@@ -179,7 +183,8 @@ static int64_t estimate_cost(int n, const int* vbegin, const int* vend, const in
 
 template<typename EXT>
 inline void print_algorithm(const EXT* ext_) {
-    printf(ext_->paralleled_subs ? "par-subs %d\n" : "seq-subs\n", ext_->subs_threads);
+    printf("subs threads: %d\n", ext_->subs_threads);
+    puts(ext_->paralleled_subs_queue ? "par-subs-queue" : "seq-subs-queue");
     puts(ext_->packed ? "packed tasks" : "single task");
 }
 
@@ -273,12 +278,12 @@ IluSolver::SetupMatrix() {
     }
 #endif
 
-    if (threads_ == 1 || nnz < param::par_subs_min_nnz) {
-        ext_->paralleled_subs = false;
+    ext_->subs_threads = std::min(threads_, param::subs_max_threads);
+    if (ext_->subs_threads == 1 || nnz / n < param::par_subs_min_nnz_per_line) {
+        ext_->paralleled_subs_queue = false;
     }
     else {
-        ext_->paralleled_subs = true;
-        ext_->subs_threads = std::min(threads_, param::subs_max_threads);
+        ext_->paralleled_subs_queue = true;
     }
     ext_->packed = threads_ > 1 && n >= param::granu_min_n;
     PRINT_ALGORITHM(ext_);
@@ -286,7 +291,9 @@ IluSolver::SetupMatrix() {
     int fact_granularity = 1, subs_granularity = 1;
     if (ext_->packed) {
         fact_granularity = param::fact_granu;
-        subs_granularity = param::subs_granu;
+        if (ext_->paralleled_subs_queue) {
+            subs_granularity = param::subs_granu;
+        }
     }
 
     auto get_subpart = [n](int p1, int p2, int p3, int p4, ConstBiasArray<int> p5, const int* p6, const int* p7, SubtreePartition& out, const LoadBalancer& lb) {
@@ -296,13 +303,13 @@ IluSolver::SetupMatrix() {
     LoadBalancer lb_fact {fact_granularity, row_ptr, ext_->csr_diag_ptr, 1};
     get_subpart(threads_, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_fact, lb_fact);
     PRINT_SUBTREE("Fact", threads_, n, ext_->subpart_fact);
-    if (ext_->paralleled_subs) {
+    if (ext_->subs_threads > 1) {
         LoadBalancer lb_subs1 {subs_granularity, row_ptr,  ext_->csr_diag_ptr, 1};
         LoadBalancer lb_subs2 {subs_granularity, ext_->csr_diag_ptr, row_ptr + 1, 0};
         get_subpart(ext_->subs_threads, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_subs_l, lb_subs1);
         get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr_diag_ptr, 1}, row_ptr + 1, col_idx, ext_->subpart_subs_u, lb_subs2);
-        PRINT_SUBTREE("SubsL", threads_, n, ext_->subpart_subs_l);
-        PRINT_SUBTREE("SubsU", threads_, n, ext_->subpart_subs_u);
+        PRINT_SUBTREE("SubsL", ext_->subs_threads, n, ext_->subpart_subs_l);
+        PRINT_SUBTREE("SubsU", ext_->subs_threads, n, ext_->subpart_subs_u);
     }
 
     destroy_array(extt_);
@@ -358,7 +365,7 @@ static void subpart_parallel_run(int threads, int n, const SubtreePartition& sub
         int tid = omp_get_thread_num();
         if(tid < threads) {
             /* independent part */
-            for(int k = subpart.part_ptr[tid]; k < subpart.part_ptr[tid + 1]; ++k) {
+            for (int k = subpart.part_ptr[tid]; k < subpart.part_ptr[tid + 1]; ++k) {
                 fs(subpart.partitions[k], tid);
             }
             /* queue part */
@@ -374,6 +381,29 @@ static void subpart_parallel_run(int threads, int n, const SubtreePartition& sub
             }
         }
     }
+}
+
+template <class JobS>
+static void subpart_parallel_run_seq_queue(int threads, int n, const SubtreePartition& subpart,
+                                           const JobS& fs) {
+    auto tic = Rdtsc();
+#pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        if(tid < threads) {
+            /* independent part */
+            for (int k = subpart.part_ptr[tid]; k < subpart.part_ptr[tid + 1]; ++k) {
+                fs(subpart.partitions[k]);
+            }
+        }
+    }
+    ttt[0] += Toc(tic);
+    tic = Rdtsc();
+            /* queue part */
+    for (int k = subpart.part_ptr[threads]; k < n; ++k) {
+        fs(subpart.partitions[k]);
+    }
+    ttt[1] += Toc(tic);
 }
 
 struct Skip {
@@ -518,7 +548,7 @@ IluSolver::Factorize() {
     return true;
 }
 
-template <typename W, bool R>
+template <typename W, bool R, bool S = false>
 int substitute_row_L(int i, const int* row_ptr, const int* diag_ptr, const int* col_idx,
                         const double* lvalue, double* x, std::atomic_bool* task_done,
                         int interupt = 0) {
@@ -534,18 +564,22 @@ int substitute_row_L(int i, const int* row_ptr, const int* diag_ptr, const int* 
     double xi = x[i];
     for (int ii = begin, diag = diag_ptr[i]; ii < diag; ++ii) {
         int j = col_idx[ii];
-        if (!W::busy_waiting(&task_done[j])) {
-            x[i] = xi;
-            return ii;
+        if constexpr (!S) {
+            if (!W::busy_waiting(&task_done[j])) {
+                x[i] = xi;
+                return ii;
+            }
         }
         xi -= x[j] * lvalue[ii];
     }
     x[i] = xi;
-    task_done[i].store(true, std::memory_order_release);
+    if constexpr (!S) {
+        task_done[i].store(true, std::memory_order_release);
+    }
     return -2;
 }
 
-template <typename W, bool R>
+template <typename W, bool R, bool S = false>
 int substitute_row_U(int i, const int* row_ptr, const int* diag_ptr, const int* col_idx,
                         const double* uvalue, double* x, std::atomic_bool* task_done,
                         int interupt = 0) {
@@ -562,14 +596,18 @@ int substitute_row_U(int i, const int* row_ptr, const int* diag_ptr, const int* 
     int diag = diag_ptr[i];
     for (int ii = begin; ii > diag; --ii) { /* first complete first update */
         int j = col_idx[ii];
-        if (!W::busy_waiting(&task_done[j])) {
-            x[i] = xi;
-            return ii;
+        if constexpr (!S) {
+            if (!W::busy_waiting(&task_done[j])) {
+                x[i] = xi;
+                return ii;
+            }
         }
         xi -= x[j] * uvalue[ii];
     }
     x[i] = xi / uvalue[diag];
-    task_done[i].store(true, std::memory_order_release);
+    if constexpr (!S) {
+        task_done[i].store(true, std::memory_order_release);
+    }
     return -2;
 }
 
@@ -603,7 +641,8 @@ IluSolver::Substitute(const double* b, double* x) {
     if (b != x) {
         std::copy_n(b, n, x);
     }
-    if (!ext_->paralleled_subs) {
+    int threads = ext_->subs_threads;
+    if (threads == 1) {
         int* row_ptr = aMatrix_.row_ptr;
         int* col_idx = aMatrix_.col_idx;
         double* a = aMatrix_.value;
@@ -621,8 +660,15 @@ IluSolver::Substitute(const double* b, double* x) {
             x[i] /= a[ext_->csr_diag_ptr[i]];
         }
     }
+    else if (!ext_->paralleled_subs_queue) {
+#define SUBS_ROW(D, W) substitute_row_##D<W,false,true>(i, aMatrix_.row_ptr, ext_->csr_diag_ptr, aMatrix_.col_idx, aMatrix_.value, x, nullptr)
+        auto lfs = [&](int i) { SUBS_ROW(L, Skip); };
+        auto ufs = [&](int i) { SUBS_ROW(U, Skip); };
+        subpart_parallel_run_seq_queue(threads, n, ext_->subpart_subs_l, lfs);
+        subpart_parallel_run_seq_queue(threads, n, ext_->subpart_subs_u, ufs);
+#undef SUBS_ROW
+    }
     else if (ext_->packed) {
-        int threads = ext_->subs_threads;
 #define SUBS_ROW(D, W) substitute_row_##D<W,false>(i, aMatrix_.row_ptr, ext_->csr_diag_ptr, aMatrix_.col_idx, aMatrix_.value, x, ext_->task_done)
 #define SUBS_ROWR(D, W, I) substitute_row_##D<W,true>(i, aMatrix_.row_ptr, ext_->csr_diag_ptr, aMatrix_.col_idx, aMatrix_.value, x, ext_->task_done, I)
         auto lfs = [&](int i, int) { SUBS_ROW(L, Skip); };
