@@ -159,7 +159,8 @@ struct IluSolver::ThreadLocalExt {
     }
 };
 
-double ttt[2] = {0};
+double ttt[4] = {0};
+int ttti = 0;
 
 IluSolver::~IluSolver() {
     destroy_array(extt_);
@@ -169,6 +170,7 @@ IluSolver::~IluSolver() {
     MKL_Free_Buffers();
 #endif
     printf("%f %f\n", ttt[0], ttt[1]);
+    printf("%f %f\n", ttt[2], ttt[3]);
 }
 
 #if 0
@@ -194,6 +196,12 @@ inline void print_subtree(const char* name, int threads, int n, const SubtreePar
         printf("%d ", subtree.part_ptr[i+1] - subtree.part_ptr[i]);
     }
     printf("[%d]\n", n - subtree.part_ptr[threads]);
+    for (int i = 0; i < threads; ++i) {
+        printf("(%d, %d) ", subtree.partitions[subtree.part_ptr[i]],
+                            subtree.partitions[subtree.part_ptr[i+1]-1]);
+    }
+    printf("[(%d, %d)]\n", subtree.partitions[subtree.part_ptr[threads]],
+                           subtree.partitions[n-1]);
 }
 
 #ifdef SHOW_ALGORITHM
@@ -308,6 +316,13 @@ IluSolver::SetupMatrix() {
         LoadBalancer lb_subs2 {subs_granularity, ext_->csr_diag_ptr, row_ptr + 1, 0};
         get_subpart(ext_->subs_threads, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_subs_l, lb_subs1);
         get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr_diag_ptr, 1}, row_ptr + 1, col_idx, ext_->subpart_subs_u, lb_subs2);
+        if (!ext_->paralleled_subs_queue) {
+            auto sort_queue = [n, t = ext_->subs_threads](SubtreePartition& p, const auto& cmp) {
+                std::sort(&p.partitions[p.part_ptr[t]], &p.partitions[n], cmp);
+            };
+            sort_queue(ext_->subpart_subs_l, std::less<int>());
+            sort_queue(ext_->subpart_subs_u, std::greater<int>());
+        }
         PRINT_SUBTREE("SubsL", ext_->subs_threads, n, ext_->subpart_subs_l);
         PRINT_SUBTREE("SubsU", ext_->subs_threads, n, ext_->subpart_subs_u);
     }
@@ -397,13 +412,13 @@ static void subpart_parallel_run_seq_queue(int threads, int n, const SubtreePart
             }
         }
     }
-    ttt[0] += Toc(tic);
+    ttt[ttti] += Toc(tic);
     tic = Rdtsc();
             /* queue part */
     for (int k = subpart.part_ptr[threads]; k < n; ++k) {
         fs(subpart.partitions[k]);
     }
-    ttt[1] += Toc(tic);
+    ttt[ttti+1] += Toc(tic);
 }
 
 struct Skip {
@@ -664,7 +679,9 @@ IluSolver::Substitute(const double* b, double* x) {
 #define SUBS_ROW(D, W) substitute_row_##D<W,false,true>(i, aMatrix_.row_ptr, ext_->csr_diag_ptr, aMatrix_.col_idx, aMatrix_.value, x, nullptr)
         auto lfs = [&](int i) { SUBS_ROW(L, Skip); };
         auto ufs = [&](int i) { SUBS_ROW(U, Skip); };
+        ttti = 0;
         subpart_parallel_run_seq_queue(threads, n, ext_->subpart_subs_l, lfs);
+        ttti = 2;
         subpart_parallel_run_seq_queue(threads, n, ext_->subpart_subs_u, ufs);
 #undef SUBS_ROW
     }

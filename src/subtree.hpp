@@ -546,6 +546,19 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
     level.reset();
     task_queue = new int[nsuper + 1];
     build_queue(n, nsuper, sup2col.get(), sup_perm.get(), task_queue, partitions, queue_part_begin, col2sup.get());
+
+    // sort each partition for cache friendliness
+    if (vertex_delta > 0) {
+        for (int i = 0; i < nproc; ++i) {
+            std::sort(&partitions[part_ptr[i]], &partitions[part_ptr[i+1]]);
+        }
+    }
+    else {
+        for (int i = 0; i < nproc; ++i) {
+            std::sort(&partitions[part_ptr[i]], &partitions[part_ptr[i+1]], std::greater<int>());
+        }
+    }
+
     return nsuper;
 }
 
