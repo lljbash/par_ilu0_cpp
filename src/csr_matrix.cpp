@@ -1,9 +1,11 @@
 #include "csr_matrix.h"
 #include <cstdio>
 #include <algorithm>
+#include <numeric>
 #include <tuple>
 #include <vector>
 #include <mkl.h>
+#include <suitesparse/amd.h>
 #include "scope_guard.hpp"
 
 template <typename T>
@@ -92,4 +94,37 @@ void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
         ++nnz;
     }
     mat->row_ptr[n] = nnz;
+}
+
+void CsrMatVec(const CsrMatrix* mat, const double* vec, double* sol) {
+    std::fill_n(sol, mat->size, 0);
+    for (int row = 0; row < mat->size; ++row) {
+        for (int i = mat->row_ptr[row]; i < mat->row_ptr[row+1]; ++i) {
+            int col = mat->col_idx[i];
+            sol[row] += mat->value[i] * vec[col];
+        }
+    }
+}
+
+int CsrAmdOrder(const CsrMatrix* mat, int* p, int* ip) {
+    int n = mat->size;
+    int nnz = GetCsrNonzeros(mat);
+    std::vector<int> ap(n + 2, 0);
+    std::vector<int> ai(nnz);
+    for (int i = 0; i < nnz; ++i) {
+        ap[mat->col_idx[i]+2]++;
+    }
+    std::partial_sum(ap.begin(), ap.end(), ap.begin());
+    for (int i = 0; i < n; ++i) {
+        for (int j = mat->row_ptr[i]; j < mat->row_ptr[i+1]; ++j) {
+            ai[ap[mat->col_idx[j]+1]++] = i;
+        }
+    }
+    auto ret = amd_order(mat->size, ap.data(), ai.data(), p, nullptr, nullptr);
+    if (ip) {
+        for (int i = 0; i < n; ++i) {
+            ip[p[i]] = i;
+        }
+    }
+    return -(ret == AMD_INVALID || ret == AMD_OUT_OF_MEMORY);
 }

@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include "csr_matvec.h"
 #include "gmres_c.h"
 
 int main(int argc, char* argv[]) {

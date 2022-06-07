@@ -36,6 +36,12 @@ inline int GetCsrNonzeros(const CsrMatrix* mat) {
 #define ReadCsrMatrixMM1 LLJBASH_DECL(ReadCsrMatrixMM1)
 void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename);
 
+#define CsrMatVec LLJBASH_DECL(CsrMatVec)
+void CsrMatVec(const CsrMatrix* mat, const double* vec, double* sol);
+
+#define CsrAmdOrder LLJBASH_DECL(CsrAmdOrder)
+int CsrAmdOrder(const CsrMatrix* mat, int* p, int* ip);
+
 #ifdef __cplusplus
 }
 #endif

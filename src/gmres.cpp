@@ -1,7 +1,6 @@
 #include "gmres.hpp"
 #include <cmath>
 #include <mkl.h>
-#include "csr_matvec.h"
 #include "scope_guard.hpp"
 #include "tictoc.hpp"
 
