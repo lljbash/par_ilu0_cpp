@@ -25,6 +25,9 @@ void SetupCsrMatrix(CsrMatrix* mat, int size, int max_nnz);
 #define CopyCsrMatrix LLJBASH_DECL(CopyCsrMatrix)
 void CopyCsrMatrix(CsrMatrix* dst, const CsrMatrix* src);
 
+#define CopyCsrMatrixValues LLJBASH_DECL(CopyCsrMatrixValues)
+void CopyCsrMatrixValues(CsrMatrix* dst, const CsrMatrix* src);
+
 #define DestroyCsrMatrix LLJBASH_DECL(DestroyCsrMatrix)
 void DestroyCsrMatrix(CsrMatrix* mat);
 

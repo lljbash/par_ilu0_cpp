@@ -32,10 +32,20 @@ void SetupCsrMatrix(CsrMatrix* mat, int size, int max_nnz) {
 }
 
 void CopyCsrMatrix(CsrMatrix* dst, const CsrMatrix* src) {
-    SetupCsrMatrix(dst, src->size, src->max_nnz);
-    std::copy_n(src->row_ptr, src->size + 1, dst->row_ptr);
-    std::copy_n(src->col_idx, src->max_nnz, dst->col_idx);
-    std::copy_n(src->value, src->max_nnz, dst->value);
+    const int n = src->size;
+    const int n_plus_one = n + 1;
+    const int nnz = GetCsrNonzeros(src);
+    const int one = 1;
+    SetupCsrMatrix(dst, n, nnz);
+    std::copy_n(src->row_ptr, n_plus_one, dst->row_ptr);
+    std::copy_n(src->col_idx, nnz, dst->col_idx);
+    dcopy(&nnz, src->value, &one, dst->value, &one);
+}
+
+void CopyCsrMatrixValues(CsrMatrix* dst, const CsrMatrix* src) {
+    const int nnz = GetCsrNonzeros(src);
+    const int one = 1;
+    dcopy(&nnz, src->value, &one, dst->value, &one);
 }
 
 void DestroyCsrMatrix(CsrMatrix* mat) {
@@ -108,19 +118,20 @@ void CsrMatVec(const CsrMatrix* mat, const double* vec, double* sol) {
 
 int CsrAmdOrder(const CsrMatrix* mat, int* p, int* ip) {
     int n = mat->size;
-    int nnz = GetCsrNonzeros(mat);
-    std::vector<int> ap(n + 2, 0);
-    std::vector<int> ai(nnz);
-    for (int i = 0; i < nnz; ++i) {
-        ap[mat->col_idx[i]+2]++;
-    }
-    std::partial_sum(ap.begin(), ap.end(), ap.begin());
-    for (int i = 0; i < n; ++i) {
-        for (int j = mat->row_ptr[i]; j < mat->row_ptr[i+1]; ++j) {
-            ai[ap[mat->col_idx[j]+1]++] = i;
-        }
-    }
-    auto ret = amd_order(mat->size, ap.data(), ai.data(), p, nullptr, nullptr);
+    //int nnz = GetCsrNonzeros(mat);
+    //std::vector<int> ap(n + 2, 0);
+    //std::vector<int> ai(nnz);
+    //for (int i = 0; i < nnz; ++i) {
+        //ap[mat->col_idx[i]+2]++;
+    //}
+    //std::partial_sum(ap.begin(), ap.end(), ap.begin());
+    //for (int i = 0; i < n; ++i) {
+        //for (int j = mat->row_ptr[i]; j < mat->row_ptr[i+1]; ++j) {
+            //ai[ap[mat->col_idx[j]+1]++] = i;
+        //}
+    //}
+    //auto ret = amd_order(mat->size, ap.data(), ai.data(), p, nullptr, nullptr);
+    auto ret = amd_order(mat->size, mat->row_ptr, mat->col_idx, p, nullptr, nullptr);
     if (ip) {
         for (int i = 0; i < n; ++i) {
             ip[p[i]] = i;
