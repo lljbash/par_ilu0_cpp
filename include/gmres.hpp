@@ -22,11 +22,12 @@ public:
     std::pair<bool, int> Solve(const CsrMatrix* mat, double* rhs, double* sol);
 
 private:
-    void SetupMkl(int n);
-
     GmresParameters param_;
     std::function<void(const double*, double*)> precon_;
     GmresStat stat_;
+
+#if 0
+    void SetupMkl(int n);
     struct {
         bool setup = false;
         int ipar[128];
@@ -35,6 +36,14 @@ private:
         double* b;
         double* residual;
     } mkl_;
+#else
+    struct {
+        bool setup = false;
+        double* vv = nullptr;
+        double* z = nullptr;
+        double* hh = nullptr;
+    } intermediate_;
+#endif
 };
 
 } // namespace lljbash

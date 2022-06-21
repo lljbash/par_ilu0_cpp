@@ -33,19 +33,16 @@ void SetupCsrMatrix(CsrMatrix* mat, int size, int max_nnz) {
 
 void CopyCsrMatrix(CsrMatrix* dst, const CsrMatrix* src) {
     const int n = src->size;
-    const int n_plus_one = n + 1;
     const int nnz = GetCsrNonzeros(src);
-    const int one = 1;
     SetupCsrMatrix(dst, n, nnz);
-    std::copy_n(src->row_ptr, n_plus_one, dst->row_ptr);
+    std::copy_n(src->row_ptr, n + 1, dst->row_ptr);
     std::copy_n(src->col_idx, nnz, dst->col_idx);
-    dcopy(&nnz, src->value, &one, dst->value, &one);
+    cblas_dcopy(nnz, src->value, 1, dst->value, 1);
 }
 
 void CopyCsrMatrixValues(CsrMatrix* dst, const CsrMatrix* src) {
     const int nnz = GetCsrNonzeros(src);
-    const int one = 1;
-    dcopy(&nnz, src->value, &one, dst->value, &one);
+    cblas_dcopy(nnz, src->value, 1, dst->value, 1);
 }
 
 void DestroyCsrMatrix(CsrMatrix* mat) {
@@ -54,6 +51,10 @@ void DestroyCsrMatrix(CsrMatrix* mat) {
 
 void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
     std::FILE* fin = std::fopen(filename, "r");
+    if (!fin) {
+        std::fprintf(stderr, "cannot open file %s\n", filename);
+        exit(-1);
+    }
     ON_SCOPE_EXIT { std::fclose(fin); };
     constexpr int kBufSize = 256;
     char buf[kBufSize];
@@ -61,6 +62,7 @@ void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
     int n = -1;
     int nnz = 0;
     std::vector<std::tuple<int, int, double>> elements;
+    std::vector<bool> diag_exist;
     while ((is_first_line || static_cast<int>(elements.size()) < nnz)
             && std::fgets(buf, kBufSize, fin)) {
         if (buf[0] != '%') {
@@ -74,7 +76,8 @@ void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
                     n = m;
                 }
                 SetupCsrMatrix(mat, n, nnz);
-                elements.reserve(nnz);
+                elements.reserve(nnz + n);
+                diag_exist.resize(n, false);
                 is_first_line = false;
             }
             else {
@@ -86,7 +89,16 @@ void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
                     continue;
                 }
                 elements.emplace_back(i - 1, j - 1, a);
+                if (i == j) {
+                    diag_exist[i-1] = true;
+                }
             }
+        }
+    }
+    for (int i = 0; i < n; ++i) {
+        if (!diag_exist[i]) {
+            printf("missing diag %d, add 1e-3\n", i);
+            elements.emplace_back(i, i, 1e-3);
         }
     }
     std::sort(elements.begin(), elements.end());

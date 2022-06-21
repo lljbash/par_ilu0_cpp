@@ -5,9 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <omp.h>
-#if USE_MKL_ILU || USE_MKL_SV
 #include <mkl.h>
-#endif
 #include "scope_guard.hpp"
 #include "subtree.hpp"
 #include "tictoc.hpp"
@@ -654,7 +652,7 @@ IluSolver::Substitute(const double* b, double* x) {
     mkl_sparse_d_trsv(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, csrU, descrU, ext_->trvec, x);
 #else
     if (b != x) {
-        std::copy_n(b, n, x);
+        cblas_dcopy(n, b, 1, x, 1);
     }
     int threads = ext_->subs_threads;
     if (threads == 1) {
