@@ -75,7 +75,7 @@ void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
                 if (m > n) {
                     n = m;
                 }
-                SetupCsrMatrix(mat, n, nnz);
+                SetupCsrMatrix(mat, n, nnz + n);
                 elements.reserve(nnz + n);
                 diag_exist.resize(n, false);
                 is_first_line = false;
