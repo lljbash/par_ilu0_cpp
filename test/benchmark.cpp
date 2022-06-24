@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <map>
 #include <mkl.h>
 #include "cxxopts.hpp"
 #include "gmres.hpp"
@@ -14,6 +15,7 @@ int main(int argc, char* argv[]) {
     cxxopts::Options options(argv[0], "benckmark for parallel ILU(0) GMRES");
     options.add_options()
         ("m,mat", "Coefficient matrix file (MM1)", cxxopts::value<std::string>())
+        ("k,lof", "ILU(k) level of fill", cxxopts::value<int>()->default_value("0"))
         //("r,rhs", "Right hand side file", cxxopts::value<std::string>()->default_value(""))
         ("e,eps", "GMRES tolerance", cxxopts::value<double>()->default_value("1e-8"))
         ("i,maxit", "GMRES max iterations", cxxopts::value<int>()->default_value("1000"))
@@ -32,6 +34,7 @@ int main(int argc, char* argv[]) {
     CsrMatrix csr;
     ReadCsrMatrixMM1(&csr, args["mat"].as<std::string>().c_str());
     int n = csr.size;
+    int nnz = GetCsrNonzeros(&csr);
 
     auto rhs = MKL_MALLOC(double, n);
     auto sol = MKL_MALLOC(double, n);
@@ -47,9 +50,54 @@ int main(int argc, char* argv[]) {
     gmres.param().tolerance = args["eps"].as<double>();
     gmres.param().max_iterations = args["maxit"].as<int>();
     gmres.param().krylov_subspace_dimension = args["restart"].as<int>();
-
     int threads = args["threads"].as<int>();
     ilu.SetThreads(threads);
+
+    int lof = args["lof"].as<int>();
+    int knnz = 0;
+    std::vector<std::map<int, int>> row_elements(n);
+    for (int i = 0; i < n; ++i) {
+        for (int ji = csr.row_ptr[i]; ji < csr.row_ptr[i+1]; ++ji) {
+            row_elements[i][csr.col_idx[ji]] = 0;
+        }
+        for (auto kit = row_elements[i].begin(); kit != row_elements[i].end(); ++kit) {
+            int k = kit->first;
+            if (k >= i) {
+                break;
+            }
+            if (kit->second >= lof) {
+                continue;
+            }
+            for (auto jit = row_elements[k].find(k); jit != row_elements[k].end(); ++jit) {
+                int level = kit->second + jit->second + 1;
+                if (level <= lof) {
+                    row_elements[i].try_emplace(jit->first, level);
+                }
+            }
+        }
+        knnz += static_cast<int>(row_elements[i].size());
+    }
+    std::vector<int> nzmap(nnz);
+    SetupCsrMatrix(csr_ilu, n, knnz);
+    int innz = 0;
+    int iknnz = 0;
+    for (int i = 0; i < n; ++i) {
+        csr_ilu->row_ptr[i] = iknnz;
+        for (auto [j, level] : row_elements[i]) {
+            if (level == 0) {
+                nzmap[innz] = iknnz;
+                ++innz;
+            }
+            csr_ilu->col_idx[iknnz] = j;
+            ++iknnz;
+        }
+    }
+    csr_ilu->row_ptr[n] = knnz;
+    if (innz != nnz) {
+        std::puts("error");
+        std::exit(-1);
+    }
+    printf("knnz: %d\n", knnz);
 
     double setup_time = 0.0;
     double fact_time = 0.0;
@@ -62,7 +110,11 @@ int main(int argc, char* argv[]) {
     };
 
     auto run = [&](bool setup) {
-        CopyCsrMatrix(csr_ilu, &csr);
+        //CopyCsrMatrix(csr_ilu, &csr);
+        std::memset(csr_ilu->value, 0, sizeof(double) * knnz);
+        for (int i = 0; i < nnz; ++i) {
+            csr_ilu->value[nzmap[i]] = csr.value[i];
+        }
         if (setup) {
             call([&]() { ilu.SetupMatrix(); }, setup_time);
         }
@@ -99,7 +151,9 @@ int main(int argc, char* argv[]) {
 
     std::puts("\nSummary:");
     std::printf("n:                          %d\n", n);
-    std::printf("nnz:                        %d\n", GetCsrNonzeros(&csr));
+    std::printf("nnz:                        %d\n", nnz);
+    std::printf("k:                          %d\n", lof);
+    std::printf("nnz(F)/nnz(A):              %f\n", (double) knnz / nnz);
     std::printf("gmres tolerance:            %g\n", gmres.param().tolerance);
     std::printf("gmres max iterations:       %d\n", gmres.param().max_iterations);
     std::printf("gmres restart iterations:   %d\n", gmres.param().krylov_subspace_dimension);
