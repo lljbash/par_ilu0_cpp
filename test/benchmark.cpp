@@ -16,6 +16,7 @@ int main(int argc, char* argv[]) {
     options.add_options()
         ("m,mat", "Coefficient matrix file (MM1)", cxxopts::value<std::string>())
         ("k,lof", "ILU(k) level of fill", cxxopts::value<int>()->default_value("0"))
+        ("amd", "AMD reorder")
         //("r,rhs", "Right hand side file", cxxopts::value<std::string>()->default_value(""))
         ("e,eps", "GMRES tolerance", cxxopts::value<double>()->default_value("1e-8"))
         ("i,maxit", "GMRES max iterations", cxxopts::value<int>()->default_value("1000"))
@@ -35,6 +36,38 @@ int main(int argc, char* argv[]) {
     ReadCsrMatrixMM1(&csr, args["mat"].as<std::string>().c_str());
     int n = csr.size;
     int nnz = GetCsrNonzeros(&csr);
+
+    bool amd = args["amd"].as<bool>();
+    if (amd) {
+        auto amd_p = MKL_MALLOC(int, n);
+        auto amd_ip = MKL_MALLOC(int, n);
+        ON_SCOPE_EXIT {
+            mkl_free(amd_p);
+            mkl_free(amd_ip);
+        };
+        CsrAmdOrder(&csr, amd_p, amd_ip);
+        std::vector<std::tuple<int, int, double>> elements;
+        elements.reserve(nnz);
+        for (int i = 0; i < n; ++i) {
+            for (int ji = csr.row_ptr[i]; ji < csr.row_ptr[i+1]; ++ji) {
+                int j = csr.col_idx[ji];
+                double v = csr.value[ji];
+                elements.emplace_back(amd_ip[i], amd_ip[j], v);
+            }
+        }
+        sort(elements.begin(), elements.end());
+        int last_i = -1;
+        int innz = 0;
+        for (auto [i, j, v] : elements) {
+            while (last_i < i) {
+                ++last_i;
+                csr.row_ptr[last_i] = innz;
+            }
+            csr.col_idx[innz] = j;
+            csr.value[innz] = v;
+            ++innz;
+        }
+    }
 
     auto rhs = MKL_MALLOC(double, n);
     auto sol = MKL_MALLOC(double, n);
