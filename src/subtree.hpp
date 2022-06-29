@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <algorithm>
@@ -31,7 +32,7 @@ static void sort_by_rank_ascend(int *x_begin, int *x_end, const Rank *rank)
 }
 
 static void build_etree_parent(int n, int vertex_begin, int vertex_end, int vertex_delta,
-                               const ConstBiasArray<int> &edge_begins, const int *edge_ends, const int *edge_dst,
+                               const ConstBiasArray<int> &edge_begins, const int *edge_ends, const int *edge_dst, const int* stripped,
                                int *parent, int *root /* temporary */)
 {
     for (int v = vertex_begin; v != vertex_end; v += vertex_delta)
@@ -41,9 +42,15 @@ static void build_etree_parent(int n, int vertex_begin, int vertex_end, int vert
     }
     for (int j = vertex_begin; j != vertex_end; j += vertex_delta)
     {
+        if (stripped[j]) {
+            continue;
+        }
         for (int k = edge_begins[j]; k < edge_ends[j]; ++k)
         {
             int i = edge_dst[k];
+            if (stripped[i]) {
+                continue;
+            }
             while (root[i] != n)
             {
                 int i_temp = root[i];
@@ -59,7 +66,7 @@ static void build_etree_parent(int n, int vertex_begin, int vertex_end, int vert
     }
 }
 
-static void build_etree_child_sibling(int n, const int *parent, int *first_child, int *next_sibling)
+static void build_etree_child_sibling(int n, const int* stripped, const int *parent, int *first_child, int *next_sibling)
 {
     for (int v = 0; v <= n; ++v)
     {
@@ -68,6 +75,9 @@ static void build_etree_child_sibling(int n, const int *parent, int *first_child
     }
     for (int v = n - 1; v >= 0; v--)
     {
+        if (stripped[v]) {
+            continue;
+        }
         int p = parent[v];
         next_sibling[v] = first_child[p];
         first_child[p] = v;
@@ -75,11 +85,14 @@ static void build_etree_child_sibling(int n, const int *parent, int *first_child
 }
 
 template <typename weight_t>
-static void init_subtree(int vertex_begin, int vertex_end, int vertex_delta,
+static void init_subtree(int vertex_begin, int vertex_end, int vertex_delta, const int* stripped,
                          const int *parent, int *subtree_size, weight_t *subtree_weight)
 {
     for (int v = vertex_begin; v != vertex_end; v += vertex_delta)
     {
+        if (stripped[v]) {
+            continue;
+        }
         int p = parent[v];
         subtree_weight[p] += subtree_weight[v];
         subtree_size[p] += subtree_size[v];
@@ -88,7 +101,7 @@ static void init_subtree(int vertex_begin, int vertex_end, int vertex_delta,
 
 template <typename weight_t>
 static int divide_subtree(int n, int nproc, const int *first_child, const int *next_sibling,
-                          const weight_t *subtree_weight, int *subtrees)
+                          const weight_t *subtree_weight, int *subtrees, double relax)
 {
     int nsubtree;
     int ngen = 1;
@@ -114,7 +127,7 @@ static int divide_subtree(int n, int nproc, const int *first_child, const int *n
     };
     lljbash::Heap<int, decltype(comp)> heap(comp);
     heap.Push(subtrees[0]);
-    while (ngen > 0 && max_weight * nproc > sum_weight)
+    while (ngen > 0 && max_weight * nproc * relax > sum_weight)
     {
         int t = subtrees[max_weight_pos], f = first_child[t];
         while (f != etree_empty && next_sibling[f] == etree_empty)
@@ -178,10 +191,10 @@ static int divide_subtree(int n, int nproc, const int *first_child, const int *n
 
     if (nproc >= 2)
     {
-        while (nsubtree >= nproc && subtree_weight[subtrees[nsubtree - 1]] * nproc > sum_weight) // 将最长的长链缩短
+        while (nsubtree >= nproc && subtree_weight[subtrees[nsubtree - 1]] * nproc * relax > sum_weight) // 将最长的长链缩短
         {
             int last = subtrees[nsubtree - 1], ch = first_child[last];
-            weight_t second_weight = subtree_weight[subtrees[nsubtree - 2]], th = sum_weight / nproc;
+            weight_t second_weight = subtree_weight[subtrees[nsubtree - 2]], th = static_cast<int>(sum_weight / relax / nproc );
             th = (second_weight < th) ? second_weight : th;
             sum_weight -= subtree_weight[last];
             while (ch != etree_empty && subtree_weight[ch] > th)
@@ -265,7 +278,7 @@ static void build_partitions(int n, int nproc, int nsubtree, const int *subtrees
 #pragma omp parallel
     {
 #pragma omp single
-        for (int k = part_ptr[nproc], current = n; k < n;) // dfs
+        for (int k = part_ptr[nproc+1], current = n; k < n;) // dfs
         {
             int first, next;
 
@@ -286,6 +299,10 @@ static void build_partitions(int n, int nproc, int nsubtree, const int *subtrees
 
             /* assign this leaf */
             partitions[k++] = current;
+            if (current == n) {
+                std::puts("FUCK");
+                std::exit(-1);
+            }
 
             /* look for the next */
             for (next = next_unassigned(next_sibling[current]); (next == etree_empty) && (k < n);
@@ -296,6 +313,10 @@ static void build_partitions(int n, int nproc, int nsubtree, const int *subtrees
 
                 /* assign the parent node */
                 partitions[k++] = current;
+                if (current == n) {
+                    std::puts("FUCK");
+                    std::exit(-1);
+                }
             }
 
             /* go to the next */
@@ -396,7 +417,7 @@ static int aggregate_nodes(int n, int *etree /* destroyed */, const int *post_or
 
 template <typename LoadBalancer>
 static void calculate_levels(int nsuper, const int *col2sup, const int *sup2col, const int *post_order,
-                             const ConstBiasArray<int> &edge_begins, const int *edge_ends, const int *edge_dst,
+                             const ConstBiasArray<int> &edge_begins, const int *edge_ends, const int *edge_dst, const int* stripped,
                              typename LoadBalancer::weight_t *level, const LoadBalancer &load_balancer)
 {
     using weight_t = typename LoadBalancer::weight_t;
@@ -421,6 +442,9 @@ static void calculate_levels(int nsuper, const int *col2sup, const int *sup2col,
             int j = post_order[v];
             for (int k = edge_begins[j]; k < edge_ends[j]; ++k)
             {
+                if (stripped[edge_dst[k]]) {
+                    continue;
+                }
                 int ii = col2sup[edge_dst[k]];
                 if ((ii != etree_empty) && (ii != i))
                 { // belongs to the queue part && not the same super
@@ -451,7 +475,7 @@ static void build_queue(int n, int nsuper, const int *sup2col, const int *sup_pe
 
 template <typename LoadBalancer>
 static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end, int vertex_delta,
-                              ConstBiasArray<int> edge_begins, const int *edge_ends, const int *edge_dst,
+                              ConstBiasArray<int> edge_begins, const int *edge_ends, const int *edge_dst, const int* stripped,
                               int *part_ptr, int *partitions, int *parent,
                               const LoadBalancer &load_balancer)
 {
@@ -465,8 +489,8 @@ static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end
     unique_int_ptr assign(new int[n]);
 
     // construct tree
-    build_etree_parent(n, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst, parent, first_child.get());
-    build_etree_child_sibling(n, parent, first_child.get(), next_sibling.get());
+    build_etree_parent(n, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst, stripped, parent, first_child.get());
+    build_etree_child_sibling(n, stripped, parent, first_child.get(), next_sibling.get());
 
     for (int v = vertex_begin; v != vertex_end; v += vertex_delta)
     {
@@ -476,12 +500,13 @@ static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end
     subtree_weight[n] = 0;
     subtree_size[n] = 0;
 
-    init_subtree(vertex_begin, vertex_end, vertex_delta, parent, subtree_size.get(), subtree_weight.get());
+    init_subtree(vertex_begin, vertex_end, vertex_delta, stripped, parent, subtree_size.get(), subtree_weight.get());
 
     // divide subtrees
-    int nsubtree = divide_subtree(n, nproc, first_child.get(), next_sibling.get(), subtree_weight.get(), subtrees.get());
+    int nsubtree = divide_subtree(n, nproc, first_child.get(), next_sibling.get(), subtree_weight.get(), subtrees.get(), part_ptr[nproc+1] ? 0.4 : 1.0);
 
     schedule_subtree(n, nproc, nsubtree, subtrees.get(), subtree_size.get(), subtree_weight.get(), assign.get(), part_ptr);
+    part_ptr[nproc+1] += part_ptr[nproc];
 
     build_partitions(n, nproc, nsubtree, subtrees.get(), subtree_size.get(),
                      parent, first_child.get(), next_sibling.get(), part_ptr, partitions, assign.get());
@@ -515,15 +540,76 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
               int *part_ptr /* output: length nproc + 1 */,
               int *partitions /* output: length n */,
               int *&task_queue /* output: allocated by `new`*/,
-              const LoadBalancer &load_balancer)
+              const LoadBalancer &load_balancer, bool bad_etree)
 {
     using weight_t = typename LoadBalancer::weight_t;
     using unique_wt_ptr = std::unique_ptr<weight_t[]>;
     int n = (vertex_begin > vertex_end) ? (vertex_begin - vertex_end) : (vertex_end - vertex_begin);
+
+    unique_int_ptr stripped(new int[n]());
+    int nstripped = 0;
+    unique_int_ptr lset(new int[n]);
+    if (bad_etree) {
+        unique_int_ptr depth(new int[n]());
+        int max_depth = 0;
+        for (int i = vertex_begin; i != vertex_end; i += vertex_delta) {
+            for (int k = edge_begins[i]; k < edge_ends[i]; ++k) {
+                int j = edge_dst[k];
+                depth[i] = std::max(depth[i], depth[j] + 1);
+            }
+            max_depth = std::max(max_depth, depth[i] + 1);
+        }
+        unique_int_ptr lset_ptr(new int[max_depth+1]());
+        for (int i = 0; i < n; ++i) {
+            ++lset_ptr[depth[i]+1];
+        }
+        for (int i = 1; i < max_depth; ++i) {
+            lset_ptr[i+1] += lset_ptr[i];
+        }
+        for (int i = 0; i < n; ++i) {
+            lset[lset_ptr[depth[i]]++] = i;
+        }
+        for (int i = max_depth; i > 0; --i) {
+            lset_ptr[i] = lset_ptr[i-1];
+        }
+        lset_ptr[0] = 0;
+        for (int i = 0; i < max_depth; ++i) {
+            int level_size = lset_ptr[i+1] - lset_ptr[i];
+            if (nstripped + level_size > n * 0.125) {
+                break;
+            }
+            std::printf("[%d]: %d\n", i, level_size);
+            nstripped += level_size;
+            for (int j = lset_ptr[i]; j < lset_ptr[i+1]; ++j) {
+                stripped[lset[j]] = 1;
+            }
+        }
+        printf("stripped: %d\n", nstripped);
+    }
+    part_ptr[nproc+1] = nstripped;
+
     unique_int_ptr parent(new int[n]);
-    partition_subtree(n, nproc, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst,
+    partition_subtree(n, nproc, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst, stripped.get(),
                       part_ptr, partitions, parent.get(),
                       load_balancer);
+
+    // sort each partition for cache friendliness
+    if (vertex_delta > 0) {
+        for (int i = 0; i < nproc + 1; ++i) {
+            std::sort(&partitions[part_ptr[i]], &partitions[part_ptr[i+1]]);
+        }
+    }
+    else {
+        for (int i = 0; i < nproc + 1; ++i) {
+            std::sort(&partitions[part_ptr[i]], &partitions[part_ptr[i+1]], std::greater<int>());
+        }
+    }
+    if (bad_etree) {
+        for (int i = 0; i < nstripped; ++i) {
+            partitions[part_ptr[nproc]+i] = lset[i];
+        }
+        return 0;
+    }
 
     unique_int_ptr col2sup(new int[n]);
     unique_int_ptr sup2col(new int[n + 1]);
@@ -536,7 +622,7 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
     unique_int_ptr sup_perm(new int[nsuper]);
 
     // level-set sort
-    calculate_levels(nsuper, col2sup.get(), sup2col.get(), partitions, edge_begins, edge_ends, edge_dst, level.get(),
+    calculate_levels(nsuper, col2sup.get(), sup2col.get(), partitions, edge_begins, edge_ends, edge_dst, stripped.get(), level.get(),
                      load_balancer);
     for (int i = 0; i < nsuper; ++i)
     {
@@ -546,18 +632,6 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
     level.reset();
     task_queue = new int[nsuper + 1];
     build_queue(n, nsuper, sup2col.get(), sup_perm.get(), task_queue, partitions, queue_part_begin, col2sup.get());
-
-    // sort each partition for cache friendliness
-    if (vertex_delta > 0) {
-        for (int i = 0; i < nproc; ++i) {
-            std::sort(&partitions[part_ptr[i]], &partitions[part_ptr[i+1]]);
-        }
-    }
-    else {
-        for (int i = 0; i < nproc; ++i) {
-            std::sort(&partitions[part_ptr[i]], &partitions[part_ptr[i+1]], std::greater<int>());
-        }
-    }
 
     return nsuper;
 }
