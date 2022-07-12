@@ -512,6 +512,37 @@ static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end
                      parent, first_child.get(), next_sibling.get(), part_ptr, partitions, assign.get());
 }
 
+static inline std::tuple<int, unique_int_ptr, unique_int_ptr>
+levelize(int vertex_begin, int vertex_end, int vertex_delta,
+         ConstBiasArray<int> edge_begins, const int *edge_ends, const int *edge_dst) {
+    int n = (vertex_begin > vertex_end) ? (vertex_begin - vertex_end) : (vertex_end - vertex_begin);
+    unique_int_ptr depth(new int[n]());
+    int max_depth = 0;
+    for (int i = vertex_begin; i != vertex_end; i += vertex_delta) {
+        for (int k = edge_begins[i]; k < edge_ends[i]; ++k) {
+            int j = edge_dst[k];
+            depth[i] = std::max(depth[i], depth[j] + 1);
+        }
+        max_depth = std::max(max_depth, depth[i] + 1);
+    }
+    unique_int_ptr lset_ptr(new int[max_depth+1]());
+    unique_int_ptr lset(new int[n]);
+    for (int i = 0; i < n; ++i) {
+        ++lset_ptr[depth[i]+1];
+    }
+    for (int i = 1; i < max_depth; ++i) {
+        lset_ptr[i+1] += lset_ptr[i];
+    }
+    for (int i = 0; i < n; ++i) {
+        lset[lset_ptr[depth[i]]++] = i;
+    }
+    for (int i = max_depth; i > 0; --i) {
+        lset_ptr[i] = lset_ptr[i-1];
+    }
+    lset_ptr[0] = 0;
+    return {max_depth, std::move(lset_ptr), std::move(lset)};
+}
+
 /*
     n     - matrix dimension
     nproc - number of processors
@@ -547,32 +578,11 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
     int n = (vertex_begin > vertex_end) ? (vertex_begin - vertex_end) : (vertex_end - vertex_begin);
 
     unique_int_ptr stripped(new int[n]());
+    unique_int_ptr lset;
     int nstripped = 0;
-    unique_int_ptr lset(new int[n]);
     if (bad_etree) {
-        unique_int_ptr depth(new int[n]());
-        int max_depth = 0;
-        for (int i = vertex_begin; i != vertex_end; i += vertex_delta) {
-            for (int k = edge_begins[i]; k < edge_ends[i]; ++k) {
-                int j = edge_dst[k];
-                depth[i] = std::max(depth[i], depth[j] + 1);
-            }
-            max_depth = std::max(max_depth, depth[i] + 1);
-        }
-        unique_int_ptr lset_ptr(new int[max_depth+1]());
-        for (int i = 0; i < n; ++i) {
-            ++lset_ptr[depth[i]+1];
-        }
-        for (int i = 1; i < max_depth; ++i) {
-            lset_ptr[i+1] += lset_ptr[i];
-        }
-        for (int i = 0; i < n; ++i) {
-            lset[lset_ptr[depth[i]]++] = i;
-        }
-        for (int i = max_depth; i > 0; --i) {
-            lset_ptr[i] = lset_ptr[i-1];
-        }
-        lset_ptr[0] = 0;
+        auto [max_depth, lset_ptr, tmp_lset] = levelize(vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst);
+        lset = std::move(tmp_lset);
         for (int i = 0; i < max_depth; ++i) {
             int level_size = lset_ptr[i+1] - lset_ptr[i];
             if (nstripped + level_size > n * 0.125) {

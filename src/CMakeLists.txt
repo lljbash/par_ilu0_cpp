@@ -21,4 +21,6 @@ endif()
 
 if (${USE_MKL})
     target_compile_definitions(par-ilu0-gmres PRIVATE USE_MKL_ILU=1 USE_MKL_SV=1)
+elseif (${USE_LEVEL})
+    target_compile_definitions(par-ilu0-gmres PRIVATE USE_LEVELIZATION=1)
 endif()

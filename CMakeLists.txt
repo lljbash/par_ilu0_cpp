@@ -33,6 +33,7 @@ endif()
 
 option(SHOW_ALGORITHM "show algorithm" OFF)
 option(USE_MKL "use mkl" OFF)
+option(USE_LEVEL "use levelization" OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/lib)

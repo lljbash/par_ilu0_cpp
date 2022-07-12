@@ -89,6 +89,19 @@ struct SubtreePartition {
     }
 };
 
+#if USE_LEVELIZATION
+struct Levelization {
+    int nlevels;
+    unique_int_ptr lset_ptr;
+    unique_int_ptr lset;
+
+    template <class... Args>
+    void setup(Args&&... args) {
+        std::tie(nlevels, lset_ptr, lset) = levelize(std::forward<Args>(args)...);
+    }
+};
+#endif
+
 struct IluSolver::Ext {
     int* csr_diag_ptr = nullptr;
     std::atomic_bool* task_done = nullptr;
@@ -99,6 +112,10 @@ struct IluSolver::Ext {
     SubtreePartition subpart_fact;
     SubtreePartition subpart_subs_l;
     SubtreePartition subpart_subs_u;
+
+#if USE_LEVELIZATION
+    Levelization level_l, level_u;
+#endif
 
 #if USE_MKL_ILU
 #pragma message("use mkl ilu")
@@ -299,14 +316,19 @@ IluSolver::SetupMatrix() {
         }
     }
 
+#if !USE_LEVELIZATION && !(USE_MKL_ILU && USE_MKL_SV)
     auto get_subpart = [n](int p1, int p2, int p3, int p4, ConstBiasArray<int> p5, const int* p6, const int* p7, SubtreePartition& out, const LoadBalancer& lb, bool bad_etree) {
         out.create(p1, n);
         out.ntasks = tree_schedule(p1, p2, p3, p4, p5, p6, p7, out.part_ptr, out.partitions, out.task_queue, lb, bad_etree);
     };
     LoadBalancer lb_fact {fact_granularity, row_ptr, ext_->csr_diag_ptr, 1};
+    auto tic = Rdtsc();
     get_subpart(threads_, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_fact, lb_fact, false);
+    auto toc = Toc(tic);
+    std::printf("fact subtree setup time (s): %f\n", toc);
     PRINT_SUBTREE("Fact", threads_, n, ext_->subpart_fact);
     if (ext_->subs_threads > 1) {
+        auto tic = Rdtsc();
         LoadBalancer lb_subs1 {subs_granularity, row_ptr,  ext_->csr_diag_ptr, 1};
         LoadBalancer lb_subs2 {subs_granularity, ext_->csr_diag_ptr, row_ptr + 1, 0};
         get_subpart(ext_->subs_threads, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_subs_l, lb_subs1, false);
@@ -324,9 +346,17 @@ IluSolver::SetupMatrix() {
             sort_queue(ext_->subpart_subs_l, std::less<int>());
             sort_queue(ext_->subpart_subs_u, std::greater<int>());
         }
+        auto toc = Toc(tic);
+        std::printf("subs subtree setup time (s): %f\n", toc);
         PRINT_SUBTREE("SubsL", ext_->subs_threads, n, ext_->subpart_subs_l);
         PRINT_SUBTREE("SubsU", ext_->subs_threads, n, ext_->subpart_subs_u);
     }
+#endif
+
+#if USE_LEVELIZATION
+    ext_->level_l.setup(0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx);
+    ext_->level_u.setup(n-1, -1, -1, ConstBiasArray{ext_->csr_diag_ptr, 1}, row_ptr + 1, col_idx);
+#endif
 
     destroy_array(extt_);
     extt_ = new ThreadLocalExt[threads_];
@@ -427,6 +457,35 @@ static void subpart_parallel_run_seq_queue(int threads, int n, const SubtreePart
     ttt[ttti+1] += Toc(tic);
 }
 
+#if USE_LEVELIZATION
+template <class JobS>
+static void levelization_parallel_run(const Levelization& level, const JobS& fs) {
+    //std::atomic_int task_head;
+#pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        for (int l = 0; l < level.nlevels; ++l) {
+//#pragma omp single
+            //{
+                //task_head.store(level.lset_ptr[l]);
+            //}
+            //while (true) {
+                //int k = task_head.fetch_add(1, std::memory_order_relaxed);
+                //if (k >= level.lset_ptr[l+1]) {
+                    //break;
+                //}
+                //fs(level.lset[k], tid);
+            //}
+//#pragma omp barrier
+#pragma omp for schedule(dynamic)
+            for (int k = level.lset_ptr[l]; k < level.lset_ptr[l+1]; ++k) {
+                fs(level.lset[k], tid);
+            }
+        }
+    }
+}
+#endif
+
 struct Skip {
     static bool busy_waiting(std::atomic_bool*) { return true; }
 };
@@ -468,7 +527,7 @@ using Transpose = DiagnalScale<ScaleU, ScaleL>;  // For CSR format
 
 
 // now actually up_looking_row
-template <typename W, typename T, bool R>
+template <typename W, typename T, bool R, bool S = false>
 static int left_looking_col(int j, const int* col_ptr, const int* row_idx, double* a, const int* diag_ptr,
                              double* tmpa, std::atomic_bool* task_done,
                              int interupt = 0) { // -1: new; -2: finished; >= 0: interupted
@@ -499,7 +558,9 @@ static int left_looking_col(int j, const int* col_ptr, const int* row_idx, doubl
         a[ji] = tmpa[row_idx[ji]];
     }
 
-    task_done[j].store(true, std::memory_order_release);
+    if constexpr (!S) {
+        task_done[j].store(true, std::memory_order_release);
+    }
     return -2;
 }
 
@@ -532,8 +593,17 @@ bool
 IluSolver::Factorize() {
     // HERE, do triangle decomposition
     // to calculate the values in L and U
+#if USE_LEVELIZATION
+    const int* col_ptr = aMatrix_.row_ptr;
+    const int* diag_ptr = ext_->csr_diag_ptr;
+    const int* row_idx = aMatrix_.col_idx;
+    double* a = aMatrix_.value;
+    auto fs = [col_ptr, row_idx, a, diag_ptr, this](int j, int tid) {
+        left_looking_col<Skip, Transpose, false, true>(j, col_ptr, row_idx, a, diag_ptr, extt_[tid].col_modification, nullptr);};
+    levelization_parallel_run(ext_->level_l, fs);
+
+#elif USE_MKL_ILU
     int n = aMatrix_.size;
-#if USE_MKL_ILU
     int err;
     dcsrilu0(&n, aMatrix_.value, ext_->ia, ext_->ja, ext_->bilu, ext_->ipar, ext_->dpar, &err);
     std::swap(ext_->bilu, aMatrix_.value);
@@ -542,6 +612,7 @@ IluSolver::Factorize() {
     //dcopy(&nnz, ext_->bilu, &one, aMatrix_.value, &one);
     return err == 0;
 #else
+    int n = aMatrix_.size;
     const int* col_ptr = aMatrix_.row_ptr;
     const int* diag_ptr = ext_->csr_diag_ptr;
     const int* row_idx = aMatrix_.col_idx;
@@ -635,7 +706,17 @@ IluSolver::Substitute(const double* b, double* x) {
     // HERE, use the L and U calculated by ILUSolver::Factorize to solve the triangle systems
     // to calculate the x
     int n = aMatrix_.size;
-#if USE_MKL_SV
+#if USE_LEVELIZATION
+    if (b != x) {
+        cblas_dcopy(n, b, 1, x, 1);
+    }
+#define SUBS_ROW(D, W) substitute_row_##D<W,false,true>(i, aMatrix_.row_ptr, ext_->csr_diag_ptr, aMatrix_.col_idx, aMatrix_.value, x, nullptr)
+    auto lfs = [&](int i, int) { SUBS_ROW(L, Skip); };
+    auto ufs = [&](int i, int) { SUBS_ROW(U, Skip); };
+    levelization_parallel_run(ext_->level_l, lfs);
+    levelization_parallel_run(ext_->level_u, ufs);
+#undef SUBS_ROW
+#elif USE_MKL_SV
     auto& csrL = ext_->csrL;
     auto& csrU = ext_->csrU;
     matrix_descr descrL;
