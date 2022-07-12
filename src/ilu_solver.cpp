@@ -467,10 +467,10 @@ using NonTranspose = DiagnalScale<ScaleL, ScaleU>;
 using Transpose = DiagnalScale<ScaleU, ScaleL>;  // For CSR format
 
 
-
+// now actually up_looking_row
 template <typename W, typename T, bool R>
 static int left_looking_col(int j, const int* col_ptr, const int* row_idx, double* a, const int* diag_ptr,
-                             double* col_modification, std::atomic_bool* task_done,
+                             double* tmpa, std::atomic_bool* task_done,
                              int interupt = 0) { // -1: new; -2: finished; >= 0: interupted
     int begin;
     if constexpr (R) {
@@ -480,7 +480,7 @@ static int left_looking_col(int j, const int* col_ptr, const int* row_idx, doubl
         begin = interupt;
     } else {
         for (int ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
-            col_modification[row_idx[ji]] = 0;
+            tmpa[row_idx[ji]] = a[ji];
         }
         begin = col_ptr[j];
     }
@@ -490,15 +490,13 @@ static int left_looking_col(int j, const int* col_ptr, const int* row_idx, doubl
         if (!W::busy_waiting(&task_done[k])) {
             return ji;
         }
-        a[ji] = T::scale_U(a[ji] + col_modification[k], a[diag_ptr[k]]);
+        tmpa[k] /= a[diag_ptr[k]];
         for (int ki = diag_ptr[k] + 1; ki < col_ptr[k+1]; ++ki) {
-            col_modification[row_idx[ki]] -= a[ki] * a[ji];
+            tmpa[row_idx[ki]] -= a[ki] * tmpa[k];
         }
     }
-    a[diag] += col_modification[row_idx[diag]];
-    double ajj = a[diag];
-    for (int ji = diag + 1; ji < col_ptr[j+1]; ++ji) {
-        a[ji] = T::scale_L(a[ji] + col_modification[row_idx[ji]], ajj);
+    for (int ji = col_ptr[j]; ji < col_ptr[j+1]; ++ji) {
+        a[ji] = tmpa[row_idx[ji]];
     }
 
     task_done[j].store(true, std::memory_order_release);
@@ -538,10 +536,10 @@ IluSolver::Factorize() {
 #if USE_MKL_ILU
     int err;
     dcsrilu0(&n, aMatrix_.value, ext_->ia, ext_->ja, ext_->bilu, ext_->ipar, ext_->dpar, &err);
-    //std::swap(ext_->bilu, aMatrix_.value);
-    int one = 1;
-    int nnz = GetCsrNonzeros(&aMatrix_);
-    dcopy(&nnz, ext_->bilu, &one, aMatrix_.value, &one);
+    std::swap(ext_->bilu, aMatrix_.value);
+    //int one = 1;
+    //int nnz = GetCsrNonzeros(&aMatrix_);
+    //dcopy(&nnz, ext_->bilu, &one, aMatrix_.value, &one);
     return err == 0;
 #else
     const int* col_ptr = aMatrix_.row_ptr;
