@@ -254,6 +254,11 @@ PreconditionedGmres::Solve(const CsrMatrix *mat, double *rhs, double* sol) {
             hh[ptih+i] = c[i] * hh[ptih+i] + s[i] * hh[ptih+i1];
             beta = std::fabs(rs[i1]);
 /*-------------------- end [inner] while loop [Arnoldi] */
+            //printf("%f\n", beta);
+            if (std::isnan(beta)) {
+                std::puts("nan in GMRES");
+                return {false, its};
+            }
         }
 /*---------- now compute solution. 1st, solve upper trianglular system */
         rs[i] = rs[i] / hh[ptih+i];

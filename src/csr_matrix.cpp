@@ -49,6 +49,34 @@ void DestroyCsrMatrix(CsrMatrix* mat) {
     SetupCsrMatrix(mat, -1, 0);
 }
 
+#define MIN_DIAG 1e-12
+
+static bool match(int i, const std::vector<std::vector<std::pair<int, double>>>& x, int* p, int* vis) {
+    for (auto [j, a] : x[i]) {
+        if (std::abs(a) > MIN_DIAG && !vis[j]) {
+            vis[j] = 1;
+            if (p[j] == -1 || match(p[j], x, p, vis)) {
+                p[j] = i;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static void max_match(const std::vector<std::vector<std::pair<int, double>>>& x, int* p) {
+    int n = static_cast<int>(x.size());
+    std::vector<int> vis(n);
+    std::vector<int> ip(p, p + n);
+    for (int i = 0; i < n; ++i) {
+        std::fill(vis.begin(), vis.end(), 0);
+        if (ip[i] == -1 && !match(i, x, p, vis.data())) {
+            std::puts("error while matching");
+            std::exit(-1);
+        }
+    }
+}
+
 void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
     std::FILE* fin = std::fopen(filename, "r");
     if (!fin) {
@@ -61,10 +89,10 @@ void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
     bool is_first_line = true;
     int n = -1;
     int nnz = 0;
-    std::vector<std::tuple<int, int, double>> elements;
-    std::vector<bool> diag_exist;
-    while ((is_first_line || static_cast<int>(elements.size()) < nnz)
-            && std::fgets(buf, kBufSize, fin)) {
+    std::vector<std::vector<std::pair<int, double>>> elements;
+    std::vector<int> p;
+    int innz = 0;
+    while ((is_first_line || innz < nnz) && std::fgets(buf, kBufSize, fin)) {
         if (buf[0] != '%') {
             if (is_first_line) {
                 int m = -1;
@@ -76,8 +104,8 @@ void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
                     n = m;
                 }
                 SetupCsrMatrix(mat, n, nnz + n);
-                elements.reserve(nnz + n);
-                diag_exist.resize(n, false);
+                elements.resize(n);
+                p.resize(n, -1);
                 is_first_line = false;
             }
             else {
@@ -88,35 +116,48 @@ void ReadCsrMatrixMM1(CsrMatrix* mat, const char* filename) {
                 if (ret != 3) {
                     continue;
                 }
-                elements.emplace_back(i - 1, j - 1, a);
-                if (i == j) {
-                    diag_exist[i-1] = true;
+                elements[i-1].emplace_back(j - 1, a);
+                if (i == j && std::abs(a) > MIN_DIAG) {
+                    p[i-1] = i - 1;
                 }
+                ++innz;
             }
         }
+    }
+    if (innz != nnz) {
+        std::puts("nnz number error");
+        std::exit(-1);
     }
     for (int i = 0; i < n; ++i) {
-        if (!diag_exist[i]) {
-            printf("missing diag %d, add 1e-3\n", i);
-            elements.emplace_back(i, i, 1e-3);
-        }
+        std::sort(elements[i].begin(), elements[i].end(),
+                [](const std::pair<int, double>& a, const std::pair<int, double>& b) {
+                    return a.second > b.second;
+                });
     }
-    std::sort(elements.begin(), elements.end());
-    nnz = 0;
-    int last_i = -1;
-    for (auto [i, j, a] : elements) {
-        if (last_i < i) {
-            for (int ii = last_i + 1; ii <= i; ++ii) {
-                mat->row_ptr[ii] = nnz;
+    max_match(elements, p.data());
+    innz = 0;
+    for (int i = 0; i < n; ++i) {
+        int k = p[i];
+        std::sort(elements[k].begin(), elements[k].end());
+        mat->row_ptr[i] = innz;
+        bool diag = false;
+        for (auto [j, a] : elements[k]) {
+            mat->col_idx[innz] = j;
+            mat->value[innz] = a;
+            ++innz;
+            if (j == i && std::abs(a) > MIN_DIAG) {
+                diag = true;
             }
-            last_i = i;
         }
-        mat->col_idx[nnz] = j;
-        mat->value[nnz] = a;
-        ++nnz;
+        if (!diag) {
+            puts("error: missing diag");
+            std::exit(-1);
+        }
     }
-    mat->row_ptr[n] = nnz;
+    mat->row_ptr[n] = innz;
 }
+
+#undef MIN_DIAG
 
 void CsrMatVec(const CsrMatrix* mat, const double* vec, double* sol) {
     std::fill_n(sol, mat->size, 0);
