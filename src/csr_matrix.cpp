@@ -6,6 +6,7 @@
 #include <vector>
 #include <mkl.h>
 #include <suitesparse/amd.h>
+#include <suitesparse/cholmod.h>
 #include "scope_guard.hpp"
 
 template <typename T>
@@ -191,4 +192,34 @@ int CsrAmdOrder(const CsrMatrix* mat, int* p, int* ip) {
         }
     }
     return -(ret == AMD_INVALID || ret == AMD_OUT_OF_MEMORY);
+}
+
+int CsrNdOrder(const CsrMatrix* mat, int* p, int* ip) {
+    cholmod_common cm;
+    cholmod_start(&cm);
+    int n = mat->size;
+    int nnz = GetCsrNonzeros(mat);
+    auto sp = cholmod_spzeros(n, n, nnz, CHOLMOD_PATTERN, &cm);
+    std::copy_n(mat->row_ptr, n + 1, static_cast<int*>(sp->p));
+    std::copy_n(mat->col_idx, nnz, static_cast<int*>(sp->i));
+
+    //auto spt = cholmod_transpose(sp, 0, &cm);
+    //auto spa = cholmod_add(sp, spt, nullptr, nullptr, false, true, &cm);
+    //cholmod_free_sparse(&sp, &cm);
+    //cholmod_free_sparse(&spt, &cm);
+    //sp = spa;
+
+    sp->stype = 1;
+    std::vector<int> tmp(n + n);
+    cholmod_nested_dissection(sp, nullptr, 0, p, tmp.data(), tmp.data() + n, &cm);
+    //cholmod_metis(sp, nullptr, 0, false, p, &cm);
+    auto ret = (cm.status == CHOLMOD_OK);
+    cholmod_free_sparse(&sp, &cm);
+    cholmod_finish(&cm);
+    if (ip) {
+        for (int i = 0; i < n; ++i) {
+            ip[p[i]] = i;
+        }
+    }
+    return ret;
 }

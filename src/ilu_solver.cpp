@@ -94,10 +94,18 @@ struct Levelization {
     int nlevels;
     unique_int_ptr lset_ptr;
     unique_int_ptr lset;
+    int paralell_end_level;
 
     template <class... Args>
     void setup(Args&&... args) {
         std::tie(nlevels, lset_ptr, lset) = levelize(std::forward<Args>(args)...);
+        for (paralell_end_level = nlevels; paralell_end_level > 0; --paralell_end_level) {
+            if (lset_ptr[paralell_end_level] - lset_ptr[paralell_end_level-1] >= 8) {
+                break;
+            }
+        }
+        std::printf("cluster: %d    pipeline: %d\n", lset_ptr[paralell_end_level],
+                lset_ptr[nlevels] - lset_ptr[paralell_end_level]);
     }
 };
 #endif
@@ -458,29 +466,31 @@ static void subpart_parallel_run_seq_queue(int threads, int n, const SubtreePart
 }
 
 #if USE_LEVELIZATION
-template <class JobS>
-static void levelization_parallel_run(const Levelization& level, const JobS& fs) {
-    //std::atomic_int task_head;
+template <class JobS, class JobW>
+static void levelization_parallel_run(const Levelization& level, const JobS& fs, const JobW& fw,
+                                      std::atomic_bool* task_done) {
+    std::atomic_int task_head;
+    task_head.store(level.lset_ptr[level.paralell_end_level], std::memory_order_relaxed);
+    int n = level.lset_ptr[level.nlevels];
 #pragma omp parallel
     {
+#pragma omp for schedule(static, 16)
+        for (int j = 0; j < n; ++j) {
+            task_done[j].store(false, std::memory_order_relaxed);
+        }
         int tid = omp_get_thread_num();
-        for (int l = 0; l < level.nlevels; ++l) {
-//#pragma omp single
-            //{
-                //task_head.store(level.lset_ptr[l]);
-            //}
-            //while (true) {
-                //int k = task_head.fetch_add(1, std::memory_order_relaxed);
-                //if (k >= level.lset_ptr[l+1]) {
-                    //break;
-                //}
-                //fs(level.lset[k], tid);
-            //}
-//#pragma omp barrier
-#pragma omp for schedule(dynamic)
+        for (int l = 0; l < level.paralell_end_level; ++l) {
+#pragma omp for schedule(static, 1)
             for (int k = level.lset_ptr[l]; k < level.lset_ptr[l+1]; ++k) {
                 fs(level.lset[k], tid);
             }
+        }
+        while (true) {
+            int k = task_head.fetch_add(1, std::memory_order_relaxed);
+            if (k >= n) {
+                break;
+            }
+            fw(level.lset[k], tid);
         }
     }
 }
@@ -599,8 +609,10 @@ IluSolver::Factorize() {
     const int* row_idx = aMatrix_.col_idx;
     double* a = aMatrix_.value;
     auto fs = [col_ptr, row_idx, a, diag_ptr, this](int j, int tid) {
-        left_looking_col<Skip, Transpose, false, true>(j, col_ptr, row_idx, a, diag_ptr, extt_[tid].col_modification, nullptr);};
-    levelization_parallel_run(ext_->level_l, fs);
+        left_looking_col<Skip, Transpose, false>(j, col_ptr, row_idx, a, diag_ptr, extt_[tid].col_modification, ext_->task_done);};
+    auto fw = [col_ptr, row_idx, a, diag_ptr, this](int j, int tid) {
+        left_looking_col<Wait, Transpose, false>(j, col_ptr, row_idx, a, diag_ptr, extt_[tid].col_modification, ext_->task_done);};
+    levelization_parallel_run(ext_->level_l, fs, fw, ext_->task_done);
 
 #elif USE_MKL_ILU
     int n = aMatrix_.size;
@@ -623,7 +635,13 @@ IluSolver::Factorize() {
             //a[diag_ptr[i]] = 1e-10;
         //}
     //}
-    fact_parallel_run<Transpose, ThreadLocalExt>(threads_, n, col_ptr, diag_ptr, row_idx, a, extt_, ext_->task_done, ext_->subpart_fact, ext_->packed);
+    if (threads_ == 1) {
+        for (int i = 0; i < n; ++i) {
+            left_looking_col<Skip, Transpose, false, true>(i, col_ptr, row_idx, a, diag_ptr, extt_[0].col_modification, nullptr);};
+    }
+    else {
+        fact_parallel_run<Transpose, ThreadLocalExt>(threads_, n, col_ptr, diag_ptr, row_idx, a, extt_, ext_->task_done, ext_->subpart_fact, ext_->packed);
+    }
 #endif
 #if USE_MKL_SV
     if (ext_->csrL) {
@@ -710,11 +728,13 @@ IluSolver::Substitute(const double* b, double* x) {
     if (b != x) {
         cblas_dcopy(n, b, 1, x, 1);
     }
-#define SUBS_ROW(D, W) substitute_row_##D<W,false,true>(i, aMatrix_.row_ptr, ext_->csr_diag_ptr, aMatrix_.col_idx, aMatrix_.value, x, nullptr)
+#define SUBS_ROW(D, W) substitute_row_##D<W,false>(i, aMatrix_.row_ptr, ext_->csr_diag_ptr, aMatrix_.col_idx, aMatrix_.value, x, ext_->task_done)
     auto lfs = [&](int i, int) { SUBS_ROW(L, Skip); };
+    auto lfw = [&](int i, int) { SUBS_ROW(L, Wait); };
     auto ufs = [&](int i, int) { SUBS_ROW(U, Skip); };
-    levelization_parallel_run(ext_->level_l, lfs);
-    levelization_parallel_run(ext_->level_u, ufs);
+    auto ufw = [&](int i, int) { SUBS_ROW(U, Wait); };
+    levelization_parallel_run(ext_->level_l, lfs, lfw, ext_->task_done);
+    levelization_parallel_run(ext_->level_u, ufs, ufw, ext_->task_done);
 #undef SUBS_ROW
 #elif USE_MKL_SV
     auto& csrL = ext_->csrL;

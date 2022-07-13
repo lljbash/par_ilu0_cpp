@@ -45,6 +45,9 @@ void CsrMatVec(const CsrMatrix* mat, const double* vec, double* sol);
 #define CsrAmdOrder LLJBASH_DECL(CsrAmdOrder)
 int CsrAmdOrder(const CsrMatrix* mat, int* p, int* ip);
 
+#define CsrNdOrder LLJBASH_DECL(CsrNdOrder)
+int CsrNdOrder(const CsrMatrix* mat, int* p, int* ip);
+
 #ifdef __cplusplus
 }
 #endif

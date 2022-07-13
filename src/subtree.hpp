@@ -585,7 +585,7 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
         lset = std::move(tmp_lset);
         for (int i = 0; i < max_depth; ++i) {
             int level_size = lset_ptr[i+1] - lset_ptr[i];
-            if (nstripped + level_size > n * 0.125) {
+            if (nstripped /*+ level_size*/ > n * 0.06) {
                 break;
             }
             std::printf("[%d]: %d\n", i, level_size);
