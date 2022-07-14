@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include "heap.hpp"
+#include "tictoc.hpp"
 
 namespace lljbash {
 
@@ -477,7 +478,7 @@ template <typename LoadBalancer>
 static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end, int vertex_delta,
                               ConstBiasArray<int> edge_begins, const int *edge_ends, const int *edge_dst, const int* stripped,
                               int *part_ptr, int *partitions, int *parent,
-                              const LoadBalancer &load_balancer)
+                              const LoadBalancer &load_balancer, double relax)
 {
     using weight_t = typename LoadBalancer::weight_t;
     using unique_wt_ptr = std::unique_ptr<weight_t[]>;
@@ -503,7 +504,7 @@ static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end
     init_subtree(vertex_begin, vertex_end, vertex_delta, stripped, parent, subtree_size.get(), subtree_weight.get());
 
     // divide subtrees
-    int nsubtree = divide_subtree(n, nproc, first_child.get(), next_sibling.get(), subtree_weight.get(), subtrees.get(), part_ptr[nproc+1] ? 0.4 : 1.0);
+    int nsubtree = divide_subtree(n, nproc, first_child.get(), next_sibling.get(), subtree_weight.get(), subtrees.get(), relax);
 
     schedule_subtree(n, nproc, nsubtree, subtrees.get(), subtree_size.get(), subtree_weight.get(), assign.get(), part_ptr);
     part_ptr[nproc+1] += part_ptr[nproc];
@@ -512,36 +513,66 @@ static void partition_subtree(int n, int nproc, int vertex_begin, int vertex_end
                      parent, first_child.get(), next_sibling.get(), part_ptr, partitions, assign.get());
 }
 
-static inline std::tuple<int, unique_int_ptr, unique_int_ptr>
-levelize(int vertex_begin, int vertex_end, int vertex_delta,
-         ConstBiasArray<int> edge_begins, const int *edge_ends, const int *edge_dst) {
-    int n = (vertex_begin > vertex_end) ? (vertex_begin - vertex_end) : (vertex_end - vertex_begin);
-    unique_int_ptr depth(new int[n]());
-    int max_depth = 0;
-    for (int i = vertex_begin; i != vertex_end; i += vertex_delta) {
-        for (int k = edge_begins[i]; k < edge_ends[i]; ++k) {
-            int j = edge_dst[k];
-            depth[i] = std::max(depth[i], depth[j] + 1);
+struct Levelization {
+    int nlevels;
+    unique_int_ptr lset_ptr;
+    unique_int_ptr lset;
+    int paralell_end_level;
+
+    constexpr static int cluster_min_size = 16;
+
+    void levelize(int vertex_begin, int vertex_end, int vertex_delta,
+            ConstBiasArray<int> edge_begins, const int *edge_ends, const int *edge_dst) {
+        int n = (vertex_begin > vertex_end) ? (vertex_begin - vertex_end) : (vertex_end - vertex_begin);
+        unique_int_ptr depth(new int[n]());
+        nlevels = 0;
+        for (int i = vertex_begin; i != vertex_end; i += vertex_delta) {
+            for (int k = edge_begins[i]; k < edge_ends[i]; ++k) {
+                int j = edge_dst[k];
+                depth[i] = std::max(depth[i], depth[j] + 1);
+            }
+            nlevels = std::max(nlevels, depth[i] + 1);
         }
-        max_depth = std::max(max_depth, depth[i] + 1);
+        lset_ptr.reset(new int[nlevels+1]());
+        lset.reset(new int[n]);
+        for (int i = 0; i < n; ++i) {
+            ++lset_ptr[depth[i]+1];
+        }
+        for (int i = 1; i < nlevels; ++i) {
+            lset_ptr[i+1] += lset_ptr[i];
+        }
+        for (int i = 0; i < n; ++i) {
+            lset[lset_ptr[depth[i]]++] = i;
+        }
+        for (int i = nlevels; i > 0; --i) {
+            lset_ptr[i] = lset_ptr[i-1];
+        }
+        lset_ptr[0] = 0;
     }
-    unique_int_ptr lset_ptr(new int[max_depth+1]());
-    unique_int_ptr lset(new int[n]);
-    for (int i = 0; i < n; ++i) {
-        ++lset_ptr[depth[i]+1];
+
+    void sort_parallel_level() {
+        for (int l = 0; l < paralell_end_level; ++l) {
+            std::sort(&lset[lset_ptr[l]], &lset[lset_ptr[l+1]]);
+        }
     }
-    for (int i = 1; i < max_depth; ++i) {
-        lset_ptr[i+1] += lset_ptr[i];
+
+    template <class... Args>
+    void setup(Args&&... args) {
+        auto tic = Rdtsc();
+        levelize(std::forward<Args>(args)...);
+        for (paralell_end_level = nlevels; paralell_end_level > 0; --paralell_end_level) {
+            if (lset_ptr[paralell_end_level] - lset_ptr[paralell_end_level-1] >= cluster_min_size) {
+                break;
+            }
+        }
+        sort_parallel_level();
+        auto toc = Toc(tic);
+        std::printf("cluster: %d    pipeline: %d    setup time (s): %f\n",
+                lset_ptr[paralell_end_level],
+                lset_ptr[nlevels] - lset_ptr[paralell_end_level],
+                toc);
     }
-    for (int i = 0; i < n; ++i) {
-        lset[lset_ptr[depth[i]]++] = i;
-    }
-    for (int i = max_depth; i > 0; --i) {
-        lset_ptr[i] = lset_ptr[i-1];
-    }
-    lset_ptr[0] = 0;
-    return {max_depth, std::move(lset_ptr), std::move(lset)};
-}
+};
 
 /*
     n     - matrix dimension
@@ -571,23 +602,28 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
               int *part_ptr /* output: length nproc + 1 */,
               int *partitions /* output: length n */,
               int *&task_queue /* output: allocated by `new`*/,
-              const LoadBalancer &load_balancer, bool bad_etree)
+              const LoadBalancer &load_balancer,
+              double relax, double strip_ratio, Levelization** plevel = nullptr)
 {
     using weight_t = typename LoadBalancer::weight_t;
     using unique_wt_ptr = std::unique_ptr<weight_t[]>;
     int n = (vertex_begin > vertex_end) ? (vertex_begin - vertex_end) : (vertex_end - vertex_begin);
 
     unique_int_ptr stripped(new int[n]());
-    unique_int_ptr lset;
+    int* lset;
     int nstripped = 0;
-    if (bad_etree) {
-        auto [max_depth, lset_ptr, tmp_lset] = levelize(vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst);
-        lset = std::move(tmp_lset);
+    if (strip_ratio > 0) {
+        *plevel = new Levelization;
+        (*plevel)->levelize(vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst);
+        lset = (*plevel)->lset.get();
+        auto max_depth = (*plevel)->nlevels;
+        auto lset_ptr = (*plevel)->lset_ptr.get();
         for (int i = 0; i < max_depth; ++i) {
             int level_size = lset_ptr[i+1] - lset_ptr[i];
-            if (nstripped /*+ level_size*/ > n * 0.10) {
+            if (nstripped /*+ level_size*/ > n * strip_ratio) {
                 break;
             }
+            (*plevel)->paralell_end_level = i + 1;
             std::printf("[%d]: %d\n", i, level_size);
             nstripped += level_size;
             for (int j = lset_ptr[i]; j < lset_ptr[i+1]; ++j) {
@@ -601,7 +637,7 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
     unique_int_ptr parent(new int[n]);
     partition_subtree(n, nproc, vertex_begin, vertex_end, vertex_delta, edge_begins, edge_ends, edge_dst, stripped.get(),
                       part_ptr, partitions, parent.get(),
-                      load_balancer);
+                      load_balancer, relax);
 
     // sort each partition for cache friendliness
     if (vertex_delta > 0) {
@@ -614,7 +650,7 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
             std::sort(&partitions[part_ptr[i]], &partitions[part_ptr[i+1]], std::greater<int>());
         }
     }
-    if (bad_etree) {
+    if (strip_ratio > 0) {
         for (int i = 0; i < nstripped; ++i) {
             partitions[part_ptr[nproc]+i] = lset[i];
         }

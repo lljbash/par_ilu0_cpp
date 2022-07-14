@@ -39,6 +39,11 @@ constexpr double subs_fixed_subtree_weight = 1;
 constexpr double subs_fixed_queue_weight = 2;
 constexpr int subs_granu = 8;
 constexpr int subs_max_threads = 8;
+constexpr double seq_pub_queue_max_ratio = 0.02;
+//constexpr double par_pub_queue_max_ratio = 0.1;
+constexpr double strip_ratio_1 = 0.2;
+constexpr double strip_ratio_2 = 0.5;
+constexpr double subs_strip_relax = 0.7;
 
 }
 
@@ -78,6 +83,8 @@ struct SubtreePartition {
     int* task_queue = nullptr;
     int ntasks;
 
+    Levelization* level = nullptr;
+
     void create(int nthread, int n) {
         part_ptr = new int[nthread + 2];
         partitions = new int[n];
@@ -86,36 +93,9 @@ struct SubtreePartition {
         destroy_array(part_ptr);
         destroy_array(partitions);
         destroy_array(task_queue);
+        destroy_object(level);
     }
 };
-
-#if USE_LEVELIZATION
-struct Levelization {
-    int nlevels;
-    unique_int_ptr lset_ptr;
-    unique_int_ptr lset;
-    int paralell_end_level;
-
-    template <class... Args>
-    void setup(Args&&... args) {
-        auto tic = Rdtsc();
-        std::tie(nlevels, lset_ptr, lset) = levelize(std::forward<Args>(args)...);
-        for (paralell_end_level = nlevels; paralell_end_level > 0; --paralell_end_level) {
-            if (lset_ptr[paralell_end_level] - lset_ptr[paralell_end_level-1] >= 8) {
-                break;
-            }
-        }
-        for (int l = 0; l < paralell_end_level; ++l) {
-            std::sort(&lset[lset_ptr[l]], &lset[lset_ptr[l+1]]);
-        }
-        auto toc = Toc(tic);
-        std::printf("cluster: %d    pipeline: %d    setup time (s): %f\n",
-                lset_ptr[paralell_end_level],
-                lset_ptr[nlevels] - lset_ptr[paralell_end_level],
-                toc);
-    }
-};
-#endif
 
 struct IluSolver::Ext {
     int* csr_diag_ptr = nullptr;
@@ -332,13 +312,17 @@ IluSolver::SetupMatrix() {
     }
 
 #if !USE_LEVELIZATION && !(USE_MKL_ILU && USE_MKL_SV)
-    auto get_subpart = [n](int p1, int p2, int p3, int p4, ConstBiasArray<int> p5, const int* p6, const int* p7, SubtreePartition& out, const LoadBalancer& lb, bool bad_etree) {
+    auto get_subpart = [n](int p1, int p2, int p3, int p4, ConstBiasArray<int> p5, const int* p6, const int* p7, SubtreePartition& out, const LoadBalancer& lb, double relax, double strip_ratio) {
         out.create(p1, n);
-        out.ntasks = tree_schedule(p1, p2, p3, p4, p5, p6, p7, out.part_ptr, out.partitions, out.task_queue, lb, bad_etree);
+        out.ntasks = tree_schedule(p1, p2, p3, p4, p5, p6, p7, out.part_ptr, out.partitions, out.task_queue, lb, relax, strip_ratio, &out.level);
     };
     LoadBalancer lb_fact {fact_granularity, row_ptr, ext_->csr_diag_ptr, 1};
     auto tic = Rdtsc();
-    get_subpart(threads_, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_fact, lb_fact, false);
+    get_subpart(threads_, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_fact, lb_fact, 1, -1);
+    /*
+    if (!ext_->paralleled_subs_queue && lb_fact.queue_granularity() == 1 && n - ext_->subpart_fact.part_ptr[ext_->subs_threads+1] > n * param::par_pub_queue_max_ratio) {
+        get_subpart(threads_, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_fact, lb_fact, 1, param::strip_ratio_1);
+    }*/
     auto toc = Toc(tic);
     std::printf("fact subtree setup time (s): %f\n", toc);
     PRINT_SUBTREE("Fact", threads_, n, ext_->subpart_fact);
@@ -346,13 +330,19 @@ IluSolver::SetupMatrix() {
         auto tic = Rdtsc();
         LoadBalancer lb_subs1 {subs_granularity, row_ptr,  ext_->csr_diag_ptr, 1};
         LoadBalancer lb_subs2 {subs_granularity, ext_->csr_diag_ptr, row_ptr + 1, 0};
-        get_subpart(ext_->subs_threads, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_subs_l, lb_subs1, false);
-        if (!ext_->paralleled_subs_queue && ext_->subpart_subs_l.part_ptr[ext_->subs_threads] < n * 0.8) {
-            get_subpart(ext_->subs_threads, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_subs_l, lb_subs1, true);
+        get_subpart(ext_->subs_threads, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_subs_l, lb_subs1, 1, -1);
+        if (!ext_->paralleled_subs_queue && n - ext_->subpart_subs_l.part_ptr[ext_->subs_threads+1] > n * param::seq_pub_queue_max_ratio) {
+            get_subpart(ext_->subs_threads, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_subs_l, lb_subs1, param::subs_strip_relax, param::strip_ratio_1);
+            if (n - ext_->subpart_subs_l.part_ptr[ext_->subs_threads+1] > n * param::seq_pub_queue_max_ratio) {
+                get_subpart(ext_->subs_threads, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_subs_l, lb_subs1, param::subs_strip_relax, param::strip_ratio_2);
+            }
         }
-        get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr_diag_ptr, 1}, row_ptr + 1, col_idx, ext_->subpart_subs_u, lb_subs2, false);
-        if (!ext_->paralleled_subs_queue && ext_->subpart_subs_u.part_ptr[ext_->subs_threads] < n * 0.8) {
-            get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr_diag_ptr, 1}, row_ptr + 1, col_idx, ext_->subpart_subs_u, lb_subs2, true);
+        get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr_diag_ptr, 1}, row_ptr + 1, col_idx, ext_->subpart_subs_u, lb_subs2, 1, -1);
+        if (!ext_->paralleled_subs_queue && n - ext_->subpart_subs_u.part_ptr[ext_->subs_threads+1] > n * param::seq_pub_queue_max_ratio) {
+            get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr_diag_ptr, 1}, row_ptr + 1, col_idx, ext_->subpart_subs_u, lb_subs2, param::subs_strip_relax, param::strip_ratio_1);
+            if (n - ext_->subpart_subs_u.part_ptr[ext_->subs_threads+1] > n * param::seq_pub_queue_max_ratio) {
+                get_subpart(ext_->subs_threads, n-1, -1, -1, {ext_->csr_diag_ptr, 1}, row_ptr + 1, col_idx, ext_->subpart_subs_u, lb_subs2, param::subs_strip_relax, param::strip_ratio_2);
+            }
         }
         if (!ext_->paralleled_subs_queue) {
             auto sort_queue = [n, t = ext_->subs_threads](SubtreePartition& p, const auto& cmp) {
@@ -417,13 +407,23 @@ static void subpart_parallel_run(int threads, int n, const SubtreePartition& sub
         task_head.store(0, std::memory_order_relaxed);
         task_tail = subpart.ntasks;
     }
-#pragma omp parallel for schedule(static, 16)
-        for (int j = 0; j < n; ++j) {
-            task_done[j].store(false, std::memory_order_relaxed);
-        }
+    //const auto& level = subpart.level;
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
+#pragma omp for schedule(static, 16)
+        for (int j = 0; j < n; ++j) {
+            task_done[j].store(false, std::memory_order_relaxed);
+        }
+        /*
+        if (level) {
+            for (int l = 0; l < level->paralell_end_level; ++l) {
+#pragma omp for //schedule(static, 1)
+                for (int k = level->lset_ptr[l]; k < level->lset_ptr[l+1]; ++k) {
+                    fs(level->lset[k], tid);
+                }
+            }
+        }*/
         if(tid < threads) {
             /* independent part */
             for (int k = subpart.part_ptr[tid]; k < subpart.part_ptr[tid + 1]; ++k) {
@@ -448,14 +448,23 @@ template <class JobS>
 static void subpart_parallel_run_seq_queue(int threads, int n, const SubtreePartition& subpart,
                                            const JobS& fs) {
     //auto tic = Rdtsc();
-    for (int k = subpart.part_ptr[threads]; k < subpart.part_ptr[threads+1]; ++k) {
-        fs(subpart.partitions[k]);
-    }
+    //for (int k = subpart.part_ptr[threads]; k < subpart.part_ptr[threads+1]; ++k) {
+        //fs(subpart.partitions[k]);
+    //}
     //ttt[ttti+1] += Toc(tic);
     //tic = Rdtsc();
+    const auto& level = subpart.level;
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
+        if (level) {
+            for (int l = 0; l < level->paralell_end_level; ++l) {
+#pragma omp for //schedule(static, 1)
+                for (int k = level->lset_ptr[l]; k < level->lset_ptr[l+1]; ++k) {
+                    fs(level->lset[k]);
+                }
+            }
+        }
         if(tid < threads) {
             /* independent part */
             for (int k = subpart.part_ptr[tid]; k < subpart.part_ptr[tid + 1]; ++k) {
