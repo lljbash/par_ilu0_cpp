@@ -31,13 +31,13 @@ static void destroy_array(T* arr) {
 namespace param {
 
 constexpr int par_subs_min_nnz_per_line = 20;
-constexpr int granu_min_n = 10000;
+constexpr int granu_min_n = 1000;
 constexpr double fact_fixed_subtree_weight = 1;
 constexpr double fact_fixed_queue_weight = 2;
 constexpr int fact_granu = 1;
 constexpr double subs_fixed_subtree_weight = 1;
 constexpr double subs_fixed_queue_weight = 2;
-constexpr int subs_granu = 16;
+constexpr int subs_granu = 8;
 constexpr int subs_max_threads = 8;
 
 }
@@ -98,14 +98,21 @@ struct Levelization {
 
     template <class... Args>
     void setup(Args&&... args) {
+        auto tic = Rdtsc();
         std::tie(nlevels, lset_ptr, lset) = levelize(std::forward<Args>(args)...);
         for (paralell_end_level = nlevels; paralell_end_level > 0; --paralell_end_level) {
             if (lset_ptr[paralell_end_level] - lset_ptr[paralell_end_level-1] >= 8) {
                 break;
             }
         }
-        std::printf("cluster: %d    pipeline: %d\n", lset_ptr[paralell_end_level],
-                lset_ptr[nlevels] - lset_ptr[paralell_end_level]);
+        for (int l = 0; l < paralell_end_level; ++l) {
+            std::sort(&lset[lset_ptr[l]], &lset[lset_ptr[l+1]]);
+        }
+        auto toc = Toc(tic);
+        std::printf("cluster: %d    pipeline: %d    setup time (s): %f\n",
+                lset_ptr[paralell_end_level],
+                lset_ptr[nlevels] - lset_ptr[paralell_end_level],
+                toc);
     }
 };
 #endif
@@ -182,8 +189,8 @@ struct IluSolver::ThreadLocalExt {
     }
 };
 
-double ttt[4] = {0};
-int ttti = 0;
+//double ttt[4] = {0};
+//int ttti = 0;
 
 IluSolver::~IluSolver() {
     destroy_array(extt_);
@@ -192,8 +199,8 @@ IluSolver::~IluSolver() {
 #if USE_MKL_ILU || USE_MKL_SV
     MKL_Free_Buffers();
 #endif
-    printf("%f %f\n", ttt[0], ttt[1]);
-    printf("%f %f\n", ttt[2], ttt[3]);
+    //printf("%f %f\n", ttt[0], ttt[1]);
+    //printf("%f %f\n", ttt[2], ttt[3]);
 }
 
 #if 0
@@ -440,12 +447,12 @@ static void subpart_parallel_run(int threads, int n, const SubtreePartition& sub
 template <class JobS>
 static void subpart_parallel_run_seq_queue(int threads, int n, const SubtreePartition& subpart,
                                            const JobS& fs) {
-    auto tic = Rdtsc();
+    //auto tic = Rdtsc();
     for (int k = subpart.part_ptr[threads]; k < subpart.part_ptr[threads+1]; ++k) {
         fs(subpart.partitions[k]);
     }
-    ttt[ttti+1] += Toc(tic);
-    tic = Rdtsc();
+    //ttt[ttti+1] += Toc(tic);
+    //tic = Rdtsc();
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
@@ -456,13 +463,13 @@ static void subpart_parallel_run_seq_queue(int threads, int n, const SubtreePart
             }
         }
     }
-    ttt[ttti] += Toc(tic);
-    tic = Rdtsc();
+    //ttt[ttti] += Toc(tic);
+    //tic = Rdtsc();
             /* queue part */
     for (int k = subpart.part_ptr[threads+1]; k < n; ++k) {
         fs(subpart.partitions[k]);
     }
-    ttt[ttti+1] += Toc(tic);
+    //ttt[ttti+1] += Toc(tic);
 }
 
 #if USE_LEVELIZATION
@@ -480,7 +487,7 @@ static void levelization_parallel_run(const Levelization& level, const JobS& fs,
         }
         int tid = omp_get_thread_num();
         for (int l = 0; l < level.paralell_end_level; ++l) {
-#pragma omp for schedule(static, 1)
+#pragma omp for //schedule(static, 1)
             for (int k = level.lset_ptr[l]; k < level.lset_ptr[l+1]; ++k) {
                 fs(level.lset[k], tid);
             }
@@ -640,7 +647,7 @@ IluSolver::Factorize() {
             left_looking_col<Skip, Transpose, false, true>(i, col_ptr, row_idx, a, diag_ptr, extt_[0].col_modification, nullptr);};
     }
     else {
-        fact_parallel_run<Transpose, ThreadLocalExt>(threads_, n, col_ptr, diag_ptr, row_idx, a, extt_, ext_->task_done, ext_->subpart_fact, ext_->packed);
+        fact_parallel_run<Transpose, ThreadLocalExt>(threads_, n, col_ptr, diag_ptr, row_idx, a, extt_, ext_->task_done, ext_->subpart_fact, ext_->packed && param::fact_granu != 1);
     }
 #endif
 #if USE_MKL_SV
@@ -784,9 +791,9 @@ IluSolver::Substitute(const double* b, double* x) {
 #define SUBS_ROW(D, W) substitute_row_##D<W,false,true>(i, aMatrix_.row_ptr, ext_->csr_diag_ptr, aMatrix_.col_idx, aMatrix_.value, x, nullptr)
         auto lfs = [&](int i) { SUBS_ROW(L, Skip); };
         auto ufs = [&](int i) { SUBS_ROW(U, Skip); };
-        ttti = 0;
+        //ttti = 0;
         subpart_parallel_run_seq_queue(threads, n, ext_->subpart_subs_l, lfs);
-        ttti = 2;
+        //ttti = 2;
         subpart_parallel_run_seq_queue(threads, n, ext_->subpart_subs_u, ufs);
 #undef SUBS_ROW
     }

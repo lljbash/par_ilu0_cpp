@@ -25,6 +25,8 @@ int main(int argc, char* argv[]) {
         ("t,threads", "Number of threads", cxxopts::value<int>()->default_value("1"))
         ("n,rep", "Number of repeats", cxxopts::value<int>()->default_value("1"))
         ("w,warmup", "Include warmups", cxxopts::value<int>()->implicit_value("1"))
+        ("onlyfact", "only test factorization")
+        ("onlysubs", "only test substitution")
         ("h,help", "Print usage")
     ;
     auto args = options.parse(argc, argv);
@@ -149,7 +151,7 @@ int main(int argc, char* argv[]) {
         return f();
     };
 
-    auto run = [&](bool setup) {
+    auto runGmres = [&](bool setup) {
         //CopyCsrMatrix(csr_ilu, &csr);
         std::memset(csr_ilu->value, 0, sizeof(double) * knnz);
         for (int i = 0; i < nnz; ++i) {
@@ -167,6 +169,40 @@ int main(int argc, char* argv[]) {
         }
         printf("iter: %d\n", ret.second);
     };
+
+    auto runFact = [&](bool setup) {
+        std::memset(csr_ilu->value, 0, sizeof(double) * knnz);
+        for (int i = 0; i < nnz; ++i) {
+            csr_ilu->value[nzmap[i]] = csr.value[i];
+        }
+        if (setup) {
+            call([&]() { ilu.SetupMatrix(); }, setup_time);
+        }
+        call([&]() { ilu.Factorize(); }, fact_time);
+    };
+
+    auto runSubs = [&](bool setup) {
+        if (setup) {
+            std::memset(csr_ilu->value, 0, sizeof(double) * knnz);
+            for (int i = 0; i < nnz; ++i) {
+                csr_ilu->value[nzmap[i]] = csr.value[i];
+            }
+            call([&]() { ilu.SetupMatrix(); }, setup_time);
+            ilu.Factorize();
+        }
+        call([&]() { ilu.Substitute(rhs, x); }, gmres.stat().total_precon_time);
+    };
+
+    std::function<void(bool)> run;
+    if (args.count("onlyfact")) {
+        run = runFact;
+    }
+    else if (args.count("onlysubs")) {
+        run = runSubs;
+    }
+    else {
+        run = runGmres;
+    }
 
     if (args.count("warmup")) {
         int warmup = args["warmup"].as<int>();
@@ -205,6 +241,7 @@ int main(int argc, char* argv[]) {
     std::printf("total mv time (s):          %g\n", gmres.stat().total_mv_time);
     std::printf("total precon time (s):      %g\n", gmres.stat().total_precon_time);
     std::printf("average factorize time (s): %g\n", fact_time / rep);
+    std::printf("average precon time (s):    %g\n", gmres.stat().total_precon_time / rep);
     std::printf("average gmres time (s):     %g\n", gmres_time / rep);
 
     mkl_free(rhs);
