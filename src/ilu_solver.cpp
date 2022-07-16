@@ -30,7 +30,7 @@ static void destroy_array(T* arr) {
 
 namespace param {
 
-constexpr int par_subs_min_nnz_per_line = 20;
+constexpr int par_subs_min_nnz_per_line = 40;
 constexpr int granu_min_n = 1000;
 constexpr double fact_fixed_subtree_weight = 1;
 constexpr double fact_fixed_queue_weight = 2;
@@ -40,7 +40,7 @@ constexpr double subs_fixed_queue_weight = 2;
 constexpr int subs_granu = 8;
 constexpr int subs_max_threads = 8;
 constexpr double seq_pub_queue_max_ratio = 0.02;
-//constexpr double par_pub_queue_max_ratio = 0.1;
+constexpr double par_pub_queue_max_ratio = 0.1;
 constexpr double strip_ratio_1 = 0.2;
 constexpr double strip_ratio_2 = 0.5;
 constexpr double subs_strip_relax = 0.7;
@@ -319,10 +319,9 @@ IluSolver::SetupMatrix() {
     LoadBalancer lb_fact {fact_granularity, row_ptr, ext_->csr_diag_ptr, 1};
     auto tic = Rdtsc();
     get_subpart(threads_, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_fact, lb_fact, 1, -1);
-    /*
     if (!ext_->paralleled_subs_queue && lb_fact.queue_granularity() == 1 && n - ext_->subpart_fact.part_ptr[ext_->subs_threads+1] > n * param::par_pub_queue_max_ratio) {
         get_subpart(threads_, 0, n, 1, row_ptr, ext_->csr_diag_ptr, col_idx, ext_->subpart_fact, lb_fact, 1, param::strip_ratio_1);
-    }*/
+    }
     auto toc = Toc(tic);
     std::printf("fact subtree setup time (s): %f\n", toc);
     PRINT_SUBTREE("Fact", threads_, n, ext_->subpart_fact);
@@ -400,14 +399,14 @@ static void subpart_parallel_run(int threads, int n, const SubtreePartition& sub
     std::atomic_int task_head;
     int task_tail;
     if constexpr (std::is_same<JobI, std::nullptr_t>::value) {
-        task_head.store(subpart.part_ptr[threads], std::memory_order_relaxed);
+        task_head.store(subpart.part_ptr[threads+1], std::memory_order_relaxed);
         task_tail = n;
     }
     else {
         task_head.store(0, std::memory_order_relaxed);
         task_tail = subpart.ntasks;
     }
-    //const auto& level = subpart.level;
+    const auto& level = subpart.level;
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
@@ -415,7 +414,6 @@ static void subpart_parallel_run(int threads, int n, const SubtreePartition& sub
         for (int j = 0; j < n; ++j) {
             task_done[j].store(false, std::memory_order_relaxed);
         }
-        /*
         if (level) {
             for (int l = 0; l < level->paralell_end_level; ++l) {
 #pragma omp for //schedule(static, 1)
@@ -423,7 +421,7 @@ static void subpart_parallel_run(int threads, int n, const SubtreePartition& sub
                     fs(level->lset[k], tid);
                 }
             }
-        }*/
+        }
         if(tid < threads) {
             /* independent part */
             for (int k = subpart.part_ptr[tid]; k < subpart.part_ptr[tid + 1]; ++k) {

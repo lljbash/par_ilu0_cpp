@@ -630,6 +630,7 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
                 stripped[lset[j]] = 1;
             }
         }
+        (*plevel)->sort_parallel_level();
         printf("stripped: %d\n", nstripped);
     }
     part_ptr[nproc+1] = nstripped;
@@ -651,9 +652,9 @@ tree_schedule(int nproc, int vertex_begin, int vertex_end, int vertex_delta,
         }
     }
     if (strip_ratio > 0) {
-        for (int i = 0; i < nstripped; ++i) {
-            partitions[part_ptr[nproc]+i] = lset[i];
-        }
+        //for (int i = 0; i < nstripped; ++i) {
+            //partitions[part_ptr[nproc]+i] = lset[i];
+        //}
         return 0;
     }
 
