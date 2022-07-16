@@ -3,6 +3,7 @@
 #include <mkl.h>
 #include "cxxopts.hpp"
 #include "gmres.hpp"
+#include "iluk.hpp"
 #include "tictoc.hpp"
 #include "scope_guard.hpp"
 
@@ -96,49 +97,8 @@ int main(int argc, char* argv[]) {
     ilu.SetThreads(threads);
 
     int lof = args["lof"].as<int>();
-    int knnz = 0;
-    std::vector<std::map<int, int>> row_elements(n);
-    for (int i = 0; i < n; ++i) {
-        for (int ji = csr.row_ptr[i]; ji < csr.row_ptr[i+1]; ++ji) {
-            row_elements[i][csr.col_idx[ji]] = 0;
-        }
-        for (auto kit = row_elements[i].begin(); kit != row_elements[i].end(); ++kit) {
-            int k = kit->first;
-            if (k >= i) {
-                break;
-            }
-            if (kit->second >= lof) {
-                continue;
-            }
-            for (auto jit = row_elements[k].find(k); jit != row_elements[k].end(); ++jit) {
-                int level = kit->second + jit->second + 1;
-                if (level <= lof) {
-                    row_elements[i].try_emplace(jit->first, level);
-                }
-            }
-        }
-        knnz += static_cast<int>(row_elements[i].size());
-    }
     std::vector<int> nzmap(nnz);
-    SetupCsrMatrix(csr_ilu, n, knnz);
-    int innz = 0;
-    int iknnz = 0;
-    for (int i = 0; i < n; ++i) {
-        csr_ilu->row_ptr[i] = iknnz;
-        for (auto [j, level] : row_elements[i]) {
-            if (level == 0) {
-                nzmap[innz] = iknnz;
-                ++innz;
-            }
-            csr_ilu->col_idx[iknnz] = j;
-            ++iknnz;
-        }
-    }
-    csr_ilu->row_ptr[n] = knnz;
-    if (innz != nnz) {
-        std::puts("error");
-        std::exit(-1);
-    }
+    int knnz = IlukSymbolic(&csr, lof, csr_ilu, nzmap.data());
     printf("knnz: %d\n", knnz);
 
     double setup_time = 0.0;
@@ -171,6 +131,7 @@ int main(int argc, char* argv[]) {
     };
 
     auto runFact = [&](bool setup) {
+        SetupCsrMatrix(csr_ilu, n, knnz);
         std::memset(csr_ilu->value, 0, sizeof(double) * knnz);
         for (int i = 0; i < nnz; ++i) {
             csr_ilu->value[nzmap[i]] = csr.value[i];
