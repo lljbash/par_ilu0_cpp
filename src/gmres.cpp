@@ -150,6 +150,7 @@ PreconditionedGmres::Solve(const CsrMatrix *mat, double *rhs, double* sol) {
         intermediate_.vv = static_cast<double*>(mkl_malloc(sizeof(double[im1*n]), 64));
         intermediate_.z = static_cast<double*>(mkl_malloc(sizeof(double[im*n]), 64));
         intermediate_.hh = static_cast<double*>(mkl_malloc(sizeof(double[im1*(im+3)]), 64));
+        intermediate_.setup = true;
     }
     auto vv = intermediate_.vv;
     auto z = intermediate_.z;

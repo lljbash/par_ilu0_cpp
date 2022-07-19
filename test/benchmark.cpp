@@ -131,7 +131,7 @@ int main(int argc, char* argv[]) {
     };
 
     auto runFact = [&](bool setup) {
-        SetupCsrMatrix(csr_ilu, n, knnz);
+        //SetupCsrMatrix(csr_ilu, n, knnz);
         std::memset(csr_ilu->value, 0, sizeof(double) * knnz);
         for (int i = 0; i < nnz; ++i) {
             csr_ilu->value[nzmap[i]] = csr.value[i];
