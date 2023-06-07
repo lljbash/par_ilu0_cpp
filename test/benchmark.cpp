@@ -3,7 +3,7 @@
 #include <mkl.h>
 #include "cxxopts.hpp"
 #include "gmres.hpp"
-#include "iluk.hpp"
+#include "iluk.h"
 #include "tictoc.hpp"
 #include "scope_guard.hpp"
 

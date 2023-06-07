@@ -1,8 +1,6 @@
-#include "iluk.hpp"
+#include "iluk.h"
 #include <vector>
 #include <map>
-
-namespace lljbash {
 
 int IlukSymbolic(const CsrMatrix* a, int lof, CsrMatrix* f, int* nzmap) {
     int n = a->size;
@@ -54,5 +52,3 @@ int IlukSymbolic(const CsrMatrix* a, int lof, CsrMatrix* f, int* nzmap) {
     }
     return knnz;
 }
-
-} // namespace lljbash
