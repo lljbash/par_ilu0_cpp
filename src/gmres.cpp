@@ -261,7 +261,7 @@ PreconditionedGmres::Solve(const CsrMatrix *mat, double *rhs, double* sol) {
                 return {false, its};
             }
         }
-/*---------- now compute solution. 1st, solve upper trianglular system */
+/*---------- now compute solution. 1st, solve upper triangular system */
         rs[i] = rs[i] / hh[ptih+i];
         for (int ii = i - 1; ii >= 0; --ii) {
             t = rs[ii];

@@ -13,7 +13,7 @@
 using namespace lljbash;
 
 int main(int argc, char* argv[]) {
-    cxxopts::Options options(argv[0], "benckmark for parallel ILU(0) GMRES");
+    cxxopts::Options options(argv[0], "benchmark for parallel ILU(0) GMRES");
     options.add_options()
         ("m,mat", "Coefficient matrix file (MM1)", cxxopts::value<std::string>())
         ("k,lof", "ILU(k) level of fill", cxxopts::value<int>()->default_value("0"))
@@ -96,9 +96,10 @@ int main(int argc, char* argv[]) {
     int threads = args["threads"].as<int>();
     ilu.SetThreads(threads);
 
-    int lof = args["lof"].as<int>();
+    //int lof = args["lof"].as<int>();
     std::vector<int> nzmap(nnz);
-    int knnz = IlukSymbolic(&csr, lof, csr_ilu, nzmap.data());
+    //int knnz = IlukSymbolic(&csr, lof, csr_ilu, nzmap.data());
+    int knnz = Ilut(&csr, 400, 0.0000, csr_ilu, nzmap.data());
     printf("knnz: %d\n", knnz);
 
     double setup_time = 0.0;
@@ -115,7 +116,9 @@ int main(int argc, char* argv[]) {
         //CopyCsrMatrix(csr_ilu, &csr);
         std::memset(csr_ilu->value, 0, sizeof(double) * knnz);
         for (int i = 0; i < nnz; ++i) {
-            csr_ilu->value[nzmap[i]] = csr.value[i];
+            if (nzmap[i] >= 0) {
+                csr_ilu->value[nzmap[i]] = csr.value[i];
+            }
         }
         if (setup) {
             call([&]() { ilu.SetupMatrix(); }, setup_time);
@@ -134,7 +137,9 @@ int main(int argc, char* argv[]) {
         //SetupCsrMatrix(csr_ilu, n, knnz);
         std::memset(csr_ilu->value, 0, sizeof(double) * knnz);
         for (int i = 0; i < nnz; ++i) {
-            csr_ilu->value[nzmap[i]] = csr.value[i];
+            if (nzmap[i] >= 0) {
+                csr_ilu->value[nzmap[i]] = csr.value[i];
+            }
         }
         if (setup) {
             call([&]() { ilu.SetupMatrix(); }, setup_time);
@@ -146,7 +151,9 @@ int main(int argc, char* argv[]) {
         if (setup) {
             std::memset(csr_ilu->value, 0, sizeof(double) * knnz);
             for (int i = 0; i < nnz; ++i) {
-                csr_ilu->value[nzmap[i]] = csr.value[i];
+                if (nzmap[i] >= 0) {
+                    csr_ilu->value[nzmap[i]] = csr.value[i];
+                }
             }
             call([&]() { ilu.SetupMatrix(); }, setup_time);
             ilu.Factorize();
@@ -189,7 +196,7 @@ int main(int argc, char* argv[]) {
     std::puts("\nSummary:");
     std::printf("n:                          %d\n", n);
     std::printf("nnz:                        %d\n", nnz);
-    std::printf("k:                          %d\n", lof);
+    //std::printf("k:                          %d\n", lof);
     std::printf("nnz(F)/nnz(A):              %f\n", (double) knnz / nnz);
     std::printf("gmres tolerance:            %g\n", gmres.param().tolerance);
     std::printf("gmres max iterations:       %d\n", gmres.param().max_iterations);
